@@ -39,3 +39,29 @@ UC San Diego Library Digital Collections.
 }</pre></details>
 
 The Python codes are implemented in Python 3.10.
+
+## Saving reduced dynamics
+
+Use `save_reduced_data.py` to compute the uncentered POD used in `main.ipynb`
+without constructing the full concatenated snapshot matrix in memory. The
+default rank is 23:
+
+```bash
+export PATH=~/miniforge3/envs/capillarywave/bin:$PATH
+python save_reduced_data.py 0p10
+```
+
+To select another rank or output file:
+
+```bash
+python save_reduced_data.py 0p10 --rank 30 --output reduced_0p10_r30.h5
+```
+
+The default file is
+`reduced_data/<power>/reduced_dynamics_<power>_r<rank>.h5`. Each repeated
+experiment is preserved as one uninterrupted trajectory—there is no
+segmentation. The file contains the reduced state in `(mode, experiment,
+time)` order, the POD basis and full singular-value spectrum, the spatial and
+time grids, and the source label for every experiment. Reduced coordinates use
+compressed `float32` storage by default; pass `--dtype float64` when storage
+size matters less than retaining double precision.

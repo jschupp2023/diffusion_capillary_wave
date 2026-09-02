@@ -18,7 +18,8 @@ import matplotlib as mpl
 
 import os, h5py
 
-def load_Q_dataset(power: str, labels: list[str], base_path: str = "/disk/hyk049/DHM_new_1Dcenter") -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, int]:
+def load_Q_dataset(power: str, labels: list[str], base_path: str = "/home/jonas/ucsd_thesis/DHM_new_1Dcenter"
+) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, int]:
     """
     Load Q datasets for given power and labels.
 
@@ -1023,7 +1024,7 @@ class QDataset:
         self.tt: np.ndarray | None = None
 
     @classmethod
-    def load(cls, power: str, labels: list[str], base_path: str = "/disk/hyk049/DHM_new_1Dcenter") -> "QDataset":
+    def load(cls, power: str, labels: list[str], base_path: str = "/home/jonas/ucsd_thesis/DHM_new_1Dcenter") -> "QDataset":
         Q, t, x, nx = load_Q_dataset(power, labels, base_path)
         return cls(Q, t, x, nx, power, labels, base_path)
 
@@ -1115,4 +1116,3 @@ class StochasticOpInfROM:
     def grid_search(self, data: StochasticOpInfTrainingData,
                             grid: RegularizationGrid, sigma: float) -> dict:
         return run_grid_search(data, grid, self.isbilinear, self.isBu, sigma)
-

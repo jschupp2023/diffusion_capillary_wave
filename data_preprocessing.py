@@ -39,7 +39,7 @@ import sys
 # save_file_name = sys.argv[4]  # e.g., Q_1D_0p30vpp_b.h5
 
 # base_input = '/disk/hyk049/DHM_new_experiment'
-# base_output = '/disk/hyk049/DHM_new_1Dcenter'
+# base_output = '/home/jonas/ucsd_thesis/DHM_new_1Dcenter'
 
 # read_file_path = os.path.join(base_input, vpp_dir, input_dir, read_file_name)
 # save_file_path = os.path.join(base_output, vpp_dir, save_file_name)
@@ -55,7 +55,7 @@ input_dir = sys.argv[2]
 save_file_name = sys.argv[3]
 
 base_input = '/disk/hyk049/DHM_new_experiment'
-base_output = '/disk/hyk049/DHM_new_1Dcenter'
+base_output = '/home/jonas/ucsd_thesis/DHM_new_1Dcenter'
 
 folder_path = os.path.join(base_input, vpp_dir, input_dir)
 

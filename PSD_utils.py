@@ -1,13 +1,13 @@
 import numpy as np
 from scipy.signal import savgol_filter, welch
-import capillary_wave_analysis as cwa
+# import capillary_wave_analysis as cwa
 
-# System parameters
-sigma = cwa.surf_ten
-rho   = cwa.density
-h     = cwa.h
-L     = cwa.L
-km    = np.pi / L
+# # System parameters
+# sigma = cwa.surf_ten
+# rho   = cwa.density
+# h     = cwa.h
+# L     = cwa.L
+# km    = np.pi / L
 
 def psd_slope_in_range(k, Sk, kmin, kmax):
 

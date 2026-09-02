@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Local editor settings
+/.vscode/settings.json
+
+# Generated videos and analysis results (keep video scripts tracked)
+/videos/*
+!/videos/*.py
+/ensemble_statistics_*/
+/whole_experiments_*/
+/unseen_data_results/
+/main_analysis_results/
+
+# POD data and plots (keep analysis scripts tracked)
+/pod_analysis/*
+!/pod_analysis/*.py
