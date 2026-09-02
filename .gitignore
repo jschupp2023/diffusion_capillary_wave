@@ -1,6 +1,9 @@
 # Python-generated files
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+env/
 
 # Local editor settings
 /.vscode/settings.json
