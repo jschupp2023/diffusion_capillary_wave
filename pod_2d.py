@@ -28,6 +28,8 @@ import time
 
 import h5py
 import numpy as np
+from scipy.linalg import eigh, qr, svdvals
+from scipy.linalg.blas import dsyrk
 
 
 DEFAULT_DATA_PATH = Path(
@@ -403,40 +405,103 @@ def randomized_spatial_subspace(
     power_iterations: int,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute approximate leading right singular vectors of the training data."""
+    """Compute an approximate leading spatial subspace of the training data.
+
+    Only the candidate subspace is needed by the subsequent full-data
+    Rayleigh-Ritz refinement.  The final wide SVD used by the conventional
+    randomized-SVD formulation is therefore replaced by a QR factorization of
+    its transpose followed by an SVD of the small triangular factor.  This has
+    the same candidate span and singular values in exact arithmetic, while
+    requiring less work and memory traffic.
+    """
     print(
         f"Randomized SVD: {candidate_rank} candidate modes, "
         f"{power_iterations} power iteration(s).",
         flush=True,
     )
     started = time.perf_counter()
+    phase_started = time.perf_counter()
     omega = rng.standard_normal(
         (training.shape[1], candidate_rank), dtype=np.float32
     )
     sample_range = training @ omega
     del omega
+    print(
+        f"  Initial random projection: "
+        f"{time.perf_counter() - phase_started:.1f} s",
+        flush=True,
+    )
+
+    # Reuse these two large work buffers throughout the power iterations.
+    # This avoids repeatedly allocating an n_space x candidate_rank array.
+    spatial_range: np.ndarray | None = None
 
     for iteration in range(power_iterations):
-        left_basis, _ = np.linalg.qr(sample_range, mode="reduced")
-        spatial_range = training.T @ left_basis
-        spatial_basis, _ = np.linalg.qr(spatial_range, mode="reduced")
-        sample_range = training @ spatial_basis
+        iteration_started = time.perf_counter()
+        left_basis, triangular_factor = qr(
+            sample_range,
+            mode="economic",
+            check_finite=False,
+        )
+        del triangular_factor
+
+        if spatial_range is None:
+            spatial_range = np.empty(
+                (training.shape[1], candidate_rank), dtype=np.float32
+            )
+        np.matmul(training.T, left_basis, out=spatial_range)
+        del left_basis
+
+        spatial_basis, triangular_factor = qr(
+            spatial_range,
+            mode="economic",
+            check_finite=False,
+        )
+        del triangular_factor
+        np.matmul(training, spatial_basis, out=sample_range)
+        del spatial_basis
         print(
-            f"Randomized SVD power iteration {iteration + 1}/{power_iterations}",
+            f"  Power iteration {iteration + 1}/{power_iterations}: "
+            f"{time.perf_counter() - iteration_started:.1f} s",
             flush=True,
         )
 
-    left_basis, _ = np.linalg.qr(sample_range, mode="reduced")
-    small_matrix = left_basis.T @ training
-    del sample_range, left_basis
-    _, training_singular_values, right_vectors = np.linalg.svd(
-        small_matrix, full_matrices=False
+    final_started = time.perf_counter()
+    left_basis, triangular_factor = qr(
+        sample_range,
+        mode="economic",
+        check_finite=False,
     )
+    del sample_range, triangular_factor
+    if spatial_range is None:
+        spatial_range = np.empty(
+            (training.shape[1], candidate_rank), dtype=np.float32
+        )
+    np.matmul(training.T, left_basis, out=spatial_range)
+    del left_basis
+
+    candidate_basis, triangular_factor = qr(
+        spatial_range,
+        mode="economic",
+        check_finite=False,
+    )
+    del spatial_range
+    training_singular_values = svdvals(
+        triangular_factor,
+        overwrite_a=True,
+        check_finite=False,
+    )
+    del triangular_factor
     candidate_basis = np.ascontiguousarray(
-        right_vectors[:candidate_rank].T, dtype=np.float32
+        candidate_basis, dtype=np.float32
     )
     training_singular_values = np.asarray(
         training_singular_values[:candidate_rank], dtype=np.float64
+    )
+    print(
+        f"  Final spatial basis and small SVD: "
+        f"{time.perf_counter() - final_started:.1f} s",
+        flush=True,
     )
     print(
         f"Randomized SVD completed in {time.perf_counter() - started:.1f} s.",
@@ -470,10 +535,16 @@ def project_full_dataset(
         dtype=np.float32,
         shape=(info.n_frames, candidate_rank),
     )
+    # BLAS SYRK updates only one triangle and therefore does about half the
+    # work of a general coefficients.T @ coefficients multiplication.
     reduced_covariance = np.zeros(
-        (candidate_rank, candidate_rank), dtype=np.float64
+        (candidate_rank, candidate_rank), dtype=np.float64, order="F"
     )
     total_snapshot_energy = 0.0
+    temporal_mean_field = np.asarray(
+        statistics.temporal_mean_field,
+        dtype=np.float32 if temporal_center else np.float64,
+    )
 
     try:
         with h5py.File(info.path, "r") as handle:
@@ -485,7 +556,7 @@ def project_full_dataset(
                 _preprocess_block(
                     block,
                     statistics.frame_spatial_mean[local_start:local_stop],
-                    statistics.temporal_mean_field,
+                    temporal_mean_field,
                     remove_spatial_mean,
                     temporal_center,
                 )
@@ -500,8 +571,19 @@ def project_full_dataset(
                 )
                 block_coefficients = block @ candidate_basis
                 coefficients[local_start:local_stop] = block_coefficients
-                coefficients64 = np.asarray(block_coefficients, dtype=np.float64)
-                reduced_covariance += coefficients64.T @ coefficients64
+                coefficients64 = np.asfortranarray(
+                    block_coefficients, dtype=np.float64
+                )
+                reduced_covariance = dsyrk(
+                    1.0,
+                    coefficients64,
+                    beta=1.0,
+                    c=reduced_covariance,
+                    trans=1,
+                    lower=0,
+                    overwrite_c=1,
+                )
+                del coefficients64
         coefficients.flush()
     except BaseException:
         del coefficients
@@ -512,6 +594,12 @@ def project_full_dataset(
         del coefficients
         coefficient_path.unlink(missing_ok=True)
         raise ValueError("Preprocessed snapshots have no finite, positive energy.")
+
+    # DSYRK accumulated the upper triangle. Mirror it before the eigensolve.
+    for column in range(candidate_rank):
+        reduced_covariance[column + 1 :, column] = reduced_covariance[
+            column, column + 1 :
+        ]
     return (
         coefficients,
         coefficient_path,
@@ -527,7 +615,12 @@ def refine_pod(
     rank: int,
 ) -> RefinedPOD:
     """Rotate the candidate basis using covariance from every source frame."""
-    eigenvalues, rotation = np.linalg.eigh(reduced_covariance)
+    eigenvalues, rotation = eigh(
+        reduced_covariance,
+        overwrite_a=False,
+        check_finite=False,
+        driver="evd",
+    )
     order = np.argsort(eigenvalues)[::-1]
     eigenvalues = np.maximum(eigenvalues[order], 0.0)
     rotation = rotation[:, order]
@@ -745,8 +838,13 @@ def write_output(
             coefficient_dataset.attrs["definition"] = (
                 "preprocessed_flattened_snapshots @ flattened_modes.T"
             )
-            for local_start in range(0, info.n_frames, args.batch_size):
-                local_stop = min(local_start + args.batch_size, info.n_frames)
+            rotation_batch_size = min(
+                info.n_frames, max(args.batch_size, 2_048)
+            )
+            for local_start in range(0, info.n_frames, rotation_batch_size):
+                local_stop = min(
+                    local_start + rotation_batch_size, info.n_frames
+                )
                 coefficient_dataset[local_start:local_stop] = (
                     candidate_coefficients[local_start:local_stop]
                     @ pod.rotation
