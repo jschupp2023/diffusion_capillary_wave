@@ -98,9 +98,10 @@ def read_center_signal(input_path: Path) -> tuple[
         frame_group = handle["main"]
         for position, frame_number in enumerate(info.frame_numbers):
             key = _frame_key(frame_number)
-            if key not in frame_group:
-                raise KeyError(f"Missing HDF5 frame /main/{key}.")
-            frame = frame_group[key]
+            try:
+                frame = frame_group[key]
+            except KeyError as error:
+                raise KeyError(f"Missing HDF5 frame /main/{key}.") from error
             if frame.shape != info.frame_shape:
                 raise ValueError(
                     f"Frame /main/{key} has shape {frame.shape}; expected "
