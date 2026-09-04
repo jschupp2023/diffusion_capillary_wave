@@ -8,6 +8,7 @@ mean PSD by itself.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import matplotlib
@@ -30,6 +31,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("raw_input", type=Path, help="Raw experimental HDF5 file.")
     parser.add_argument("pod_input", type=Path, help="Reduced POD HDF5 file.")
     parser.add_argument("--output", type=Path, required=True, help="Output PNG path.")
+    parser.add_argument(
+        "--raw-cache",
+        type=Path,
+        help=(
+            "NPZ path for the raw center signal and PSD. Existing caches are "
+            "reused so the raw HDF5 file need not be scanned again."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-raw-cache",
+        action="store_true",
+        help="Ignore an existing raw cache and reread the raw HDF5 file.",
+    )
     parser.add_argument(
         "--label",
         help="Experiment label used in the title (default: POD parent folder).",
@@ -89,6 +103,11 @@ def run(args: argparse.Namespace) -> Path:
     raw_path = args.raw_input.expanduser().resolve()
     pod_path = args.pod_input.expanduser().resolve()
     output_path = args.output.expanduser().resolve()
+    raw_cache_path = (
+        args.raw_cache.expanduser().resolve()
+        if args.raw_cache is not None
+        else output_path.with_name(f"{output_path.stem}__raw_center_psd.npz")
+    )
     for label, path in (("Raw input", raw_path), ("POD input", pod_path)):
         if not path.is_file():
             raise FileNotFoundError(f"{label} does not exist: {path}")
@@ -98,15 +117,72 @@ def run(args: argparse.Namespace) -> Path:
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    (
-        raw_time,
-        raw_signal,
-        raw_center_y,
-        raw_center_x,
-        raw_x_coordinate,
-        raw_y_coordinate,
-        raw_units,
-    ) = read_center_signal(raw_path)
+    if raw_cache_path.is_file() and not args.refresh_raw_cache:
+        with np.load(raw_cache_path, allow_pickle=False) as cache:
+            required = (
+                "time",
+                "center_signal",
+                "center_y_index",
+                "center_x_index",
+                "center_x_coordinate",
+                "center_y_coordinate",
+                "signal_units",
+            )
+            missing = [name for name in required if name not in cache]
+            if missing:
+                raise KeyError(
+                    f"Raw cache {raw_cache_path} is missing: {', '.join(missing)}"
+                )
+            raw_time = np.asarray(cache["time"], dtype=np.float64)
+            raw_signal = np.asarray(cache["center_signal"], dtype=np.float64)
+            raw_center_y = int(cache["center_y_index"])
+            raw_center_x = int(cache["center_x_index"])
+            raw_x_coordinate = float(cache["center_x_coordinate"])
+            raw_y_coordinate = float(cache["center_y_coordinate"])
+            raw_signal_units = str(cache["signal_units"])
+        raw_units = {"z": raw_signal_units}
+        if raw_time.shape != raw_signal.shape or raw_time.ndim != 1:
+            raise ValueError(
+                f"Raw cache has incompatible time/signal shapes: "
+                f"{raw_time.shape} and {raw_signal.shape}."
+            )
+        print(f"Loaded raw center cache {raw_cache_path}", flush=True)
+    else:
+        (
+            raw_time,
+            raw_signal,
+            raw_center_y,
+            raw_center_x,
+            raw_x_coordinate,
+            raw_y_coordinate,
+            raw_units,
+        ) = read_center_signal(raw_path)
+
+    raw_frequency, raw_jitter = infer_sampling_frequency(raw_time)
+    raw_psd, raw_nperseg, raw_noverlap = compute_welch(
+        raw_signal, raw_frequency, args.nperseg, args.overlap_fraction
+    )
+    raw_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_cache_path = raw_cache_path.with_name(f".{raw_cache_path.name}.tmp.npz")
+    np.savez_compressed(
+        temporary_cache_path,
+        time=raw_time,
+        center_signal=raw_signal,
+        frequency_hz=raw_psd.frequency,
+        power_spectral_density=raw_psd.density,
+        sampling_frequency_hz=np.float64(raw_frequency),
+        nperseg=np.int64(raw_nperseg),
+        noverlap=np.int64(raw_noverlap),
+        center_y_index=np.int64(raw_center_y),
+        center_x_index=np.int64(raw_center_x),
+        center_x_coordinate=np.float64(raw_x_coordinate),
+        center_y_coordinate=np.float64(raw_y_coordinate),
+        signal_units=np.asarray(raw_units.get("z", "")),
+        source_file=np.asarray(str(raw_path)),
+    )
+    os.replace(temporary_cache_path, raw_cache_path)
+    print(f"Saved raw center cache {raw_cache_path}", flush=True)
+
     (
         pod_time,
         _preprocessed_signal,
@@ -123,11 +199,7 @@ def run(args: argparse.Namespace) -> Path:
         args.batch_size,
     )
 
-    raw_frequency, raw_jitter = infer_sampling_frequency(raw_time)
     pod_frequency, pod_jitter = infer_sampling_frequency(pod_time)
-    raw_psd, raw_nperseg, raw_noverlap = compute_welch(
-        raw_signal, raw_frequency, args.nperseg, args.overlap_fraction
-    )
     restored_psd, pod_nperseg, pod_noverlap = compute_welch(
         restored_signal, pod_frequency, args.nperseg, args.overlap_fraction
     )

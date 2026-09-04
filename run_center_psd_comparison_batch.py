@@ -7,8 +7,10 @@ Expected reduced-data layout::
 The matching raw file is taken from the POD file's ``source_file`` attribute.
 If that path is unavailable, the script falls back to the same relative folder
 under ``--raw-root`` and requires exactly one direct HDF5 child there. All PNGs
-are written into one output directory with unique power/realization filenames.
-Failures are logged and skipped without stopping the batch.
+are written into one output directory with unique power/realization/rank names.
+The raw center signals and PSDs are cached in a rank-independent subdirectory
+for fast comparisons with other POD ranks. Failures are logged and skipped
+without stopping the batch.
 
 Example
 -------
@@ -48,6 +50,7 @@ class ComparisonJob:
     raw_path: Path
     pod_path: Path
     output_path: Path
+    raw_cache_path: Path
 
 
 @dataclass(frozen=True)
@@ -251,7 +254,11 @@ def discover_jobs(
                 continue
             filename = (
                 f"{condition_directory.name}__{realization_directory.name}"
-                "__raw_vs_pod_center_psd.png"
+                f"__r{pod_rank}__raw_vs_pod_center_psd.png"
+            )
+            raw_cache_filename = (
+                f"{condition_directory.name}__{realization_directory.name}"
+                "__raw_center_psd.npz"
             )
             jobs.append(
                 ComparisonJob(
@@ -260,6 +267,9 @@ def discover_jobs(
                     raw_path=raw_path,
                     pod_path=pod_path.resolve(),
                     output_path=(output_directory / filename).resolve(),
+                    raw_cache_path=(
+                        output_directory / "raw_psd_cache" / raw_cache_filename
+                    ).resolve(),
                 )
             )
     return jobs, issues
@@ -281,6 +291,8 @@ def build_command(args: argparse.Namespace, job: ComparisonJob) -> list[str]:
         str(job.pod_path),
         "--output",
         str(job.output_path),
+        "--raw-cache",
+        str(job.raw_cache_path),
         "--label",
         f"{job.condition} — {job.realization}",
         "--nperseg",
@@ -294,7 +306,7 @@ def build_command(args: argparse.Namespace, job: ComparisonJob) -> list[str]:
     ]
     if args.reconstruction_rank is not None:
         command.extend(("--reconstruction-rank", str(args.reconstruction_rank)))
-    if args.overwrite:
+    if args.overwrite or job.output_path.exists():
         command.append("--overwrite")
     return command
 
@@ -369,7 +381,11 @@ def run_batch(args: argparse.Namespace, log: TextIO) -> int:
     batch_started = time.perf_counter()
     for index, job in enumerate(jobs, start=1):
         label = f"[{index}/{len(jobs)}] {job.condition}/{job.realization}"
-        if job.output_path.exists() and not args.overwrite:
+        if (
+            job.output_path.exists()
+            and job.raw_cache_path.exists()
+            and not args.overwrite
+        ):
             announce(log, f"SKIP existing {label}: {job.output_path}")
             skipped_existing += 1
             continue
@@ -377,6 +393,7 @@ def run_batch(args: argparse.Namespace, log: TextIO) -> int:
         announce(log, f"Raw input: {job.raw_path}")
         announce(log, f"POD input: {job.pod_path}")
         announce(log, f"Output: {job.output_path}")
+        announce(log, f"Raw PSD cache: {job.raw_cache_path}")
         if args.dry_run:
             announce(log, f"DRY RUN complete for {label}")
             continue
@@ -394,7 +411,11 @@ def run_batch(args: argparse.Namespace, log: TextIO) -> int:
             log.flush()
             continue
         elapsed = time.perf_counter() - job_started
-        if return_code == 0 and job.output_path.is_file():
+        if (
+            return_code == 0
+            and job.output_path.is_file()
+            and job.raw_cache_path.is_file()
+        ):
             succeeded += 1
             announce(log, f"DONE {label} in {elapsed:.1f} s")
         else:
