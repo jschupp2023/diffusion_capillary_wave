@@ -1,12 +1,24 @@
 # Python-generated files
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
 env/
 
 # Local editor settings
 /.vscode/settings.json
+.DS_Store
+
+# Training runs, checkpoints, rollout diagnostics, and generated figures
+/runs/
+/1_D_experiments_vis/
+/images/
+/1d_stoch_opinf/main_analysis_results/
 
 # Generated videos and analysis results (keep video scripts tracked)
 /videos/*
@@ -19,3 +31,12 @@ env/
 # POD data and plots (keep analysis scripts tracked)
 /pod_analysis/*
 !/pod_analysis/*.py
+
+# Local LaTeX build products (keep the source document visible)
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+/notes.log
+/notes.out
+/notes.pdf

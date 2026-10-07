@@ -27,18 +27,141 @@ import h5py
 import matplotlib
 
 matplotlib.use("Agg")
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
+from matplotlib.figure import Figure
 import numpy as np
 
 if __package__:
     from .pod_2d import _frame_key, inspect_input
-    from .surface_visualization import draw_surface, make_surface_figure, padded_limits
+    from .surface_visualization import (SurfaceFigure, draw_surface,
+                                        make_surface_figure, padded_limits)
 else:
     from pod_2d import _frame_key, inspect_input
-    from surface_visualization import draw_surface, make_surface_figure, padded_limits
+    from surface_visualization import (SurfaceFigure, draw_surface,
+                                       make_surface_figure, padded_limits)
 
 
 DATA_ROOT = Path("/home/jonas/ucsd_thesis/reduced_data")
 RAW_FRAME_LIMIT = 1000
+
+
+def make_surface_comparison_video(
+    reference_fields: np.ndarray,
+    generated_fields: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    times_seconds: np.ndarray,
+    *,
+    output: Path,
+    x_unit: str,
+    y_unit: str,
+    z_unit: str,
+    fps: int = 30,
+    title: str | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """Render reference and generated surface sequences side by side."""
+    reference = np.asarray(reference_fields, dtype=np.float32)
+    generated = np.asarray(generated_fields, dtype=np.float32)
+    x = np.asarray(x)
+    y = np.asarray(y)
+    times = np.asarray(times_seconds, dtype=float)
+    expected = (len(times), len(y), len(x))
+    if (reference.shape != expected or generated.shape != expected
+            or not reference.size or fps < 1):
+        raise ValueError(
+            "Reference/generated fields must match finite [time, y, x] coordinates."
+        )
+    if (len(x) < 3 or len(y) < 3 or not np.all(np.diff(x) > 0)
+            or not np.all(np.diff(y) > 0)
+            or not np.isfinite(times).all() or not np.all(np.diff(times) >= 0)
+            or not np.isfinite(reference).all() or not np.isfinite(generated).all()):
+        raise ValueError("Surface video arrays must be finite with valid spatial/time grids.")
+    output = Path(output).expanduser().resolve()
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"{output} exists; pass --overwrite to replace it.")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required to write MP4 video.")
+
+    began = time.perf_counter()
+    zlim = padded_limits(np.stack((reference, generated)))
+    norm = Normalize(vmin=zlim[0], vmax=zlim[1])
+    cmap = matplotlib.colormaps["viridis"]
+    figure = Figure(figsize=(11, 5), dpi=90, facecolor="white")
+    canvas = FigureCanvasAgg(figure)
+    axes = (
+        figure.add_axes((0.02, 0.10, 0.40, 0.78), projection="3d"),
+        figure.add_axes((0.46, 0.10, 0.40, 0.78), projection="3d"),
+    )
+    plots = []
+    for axis in axes:
+        axis.view_init(elev=30, azim=-60)
+        axis.set_box_aspect((1, 1, .48))
+        axis.set(xlim=(x[0], x[-1]), ylim=(y[0], y[-1]), zlim=zlim)
+        axis.set_xlabel(f"x [{x_unit}]", labelpad=2)
+        axis.set_ylabel(f"y [{y_unit}]", labelpad=2)
+        axis.set_zlabel(f"height [{z_unit}]", labelpad=2)
+        axis.tick_params(labelsize=7, pad=0)
+        plots.append(SurfaceFigure(figure, canvas, axis, norm, cmap))
+    colorbar = figure.colorbar(
+        ScalarMappable(norm=norm, cmap=cmap),
+        cax=figure.add_axes((0.91, 0.20, 0.02, 0.58)),
+    )
+    colorbar.set_label(f"height [{z_unit}]", fontsize=8)
+    colorbar.ax.tick_params(labelsize=7)
+    if title:
+        figure.suptitle(title, fontsize=11, y=.97)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{output.stem}.", suffix=".mp4", dir=output.parent, delete=False
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    width, height = canvas.get_width_height()
+    command = [
+        ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt",
+        "rgb24", "-s:v", f"{width}x{height}", "-r", str(fps), "-i", "pipe:0",
+        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-pix_fmt", "yuv420p", str(temporary_path),
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    surfaces = [None, None]
+    try:
+        assert process.stdin is not None
+        for index, (reference_field, generated_field) in enumerate(
+                zip(reference, generated)):
+            for surface_index, (plot, field, label) in enumerate(zip(
+                    plots, (reference_field, generated_field),
+                    ("Reference reconstruction", "Generated reconstruction"))):
+                if surfaces[surface_index] is not None:
+                    surfaces[surface_index].remove()
+                surfaces[surface_index] = draw_surface(plot, x, y, field)
+                plot.axes.set_title(
+                    f"{label}\nstep {index} | t = {1e3 * times[index]:.3f} ms",
+                    fontsize=9, pad=3,
+                )
+            canvas.draw()
+            process.stdin.write(
+                np.asarray(canvas.buffer_rgba())[:, :, :3].tobytes()
+            )
+        process.stdin.close()
+        error = process.stderr.read().decode(errors="replace")
+        if process.wait() != 0:
+            raise RuntimeError(f"ffmpeg failed: {error}")
+        os.replace(temporary_path, output)
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+        process.wait()
+        temporary_path.unlink(missing_ok=True)
+        raise
+    finally:
+        figure.clear()
+    print(f"Saved {output} in {time.perf_counter() - began:.1f} s.", flush=True)
+    return output
 
 
 def _pod_file(experiment: str, rep: int, rank: int, root: Path) -> Path:

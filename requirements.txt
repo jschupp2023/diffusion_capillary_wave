@@ -2,5 +2,6 @@ numpy>=2.0
 scipy>=1.13
 h5py>=3.11
 matplotlib>=3.8
+scikit-image>=0.25
 PyWavelets>=1.6
 sympy>=1.12

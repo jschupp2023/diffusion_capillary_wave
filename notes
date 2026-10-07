@@ -1,0 +1,678 @@
+\documentclass{article}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{pdflscape}
+\usepackage{ragged2e}
+\usepackage{bm}
+\usepackage[margin=1.5cm]{geometry}
+\title{Master Thesis Notes}
+\author{Jonas Schupp}
+\date{September 2026}
+
+\begin{document}
+
+
+
+\section{Phase-Unwrapping Issue}
+variables:
+\noindent
+$h$: height;
+$h_{\mathrm{obs}}$: exported height;
+$h_{\mathrm{corr}}$: corrected height;
+$\lambda$: wavelength;
+$\Delta n = n_{\mathrm{water}}-n_{\mathrm{air}}$: refractive-index difference;
+$\phi$: unwrapped phase;
+$\phi_{\mathrm{w}}$: wrapped phase;
+$k \in \mathbb{Z}$: phase-unwrapping integer;
+$q = \lambda/\Delta n$: height change per $2\pi$ phase cycle;
+$m \in \mathbb{Z}$: integer-cycle height correction;
+
+
+\paragraph{DHM measurement and height reconstruction.}
+The camera records an intensity image of an interference pattern
+(hologram). Software reconstructs the optical phase, which is known
+only modulo $2\pi$. For transmission through water in air,
+\[
+h=\frac{\lambda}{2\pi\Delta n}\phi,
+\qquad
+\Delta n=n_{\mathrm{water}}-n_{\mathrm{air}},
+\qquad
+\phi=\phi_{\mathrm{w}}+2\pi k,\quad k\in\mathbb{Z}.
+\]
+Unwrapping determines the integer field $k$. One incorrect cycle
+produces a height offset
+\[
+q=\frac{\lambda}{\Delta n}\approx 2\,\mu\mathrm{m}.
+\]
+This estimate assumes $\lambda\approx660\,\mathrm{nm}$ and
+$\Delta n\approx0.33$; the exact export conversion remains unconfirmed.
+
+Local unwrapping becomes ambiguous when the true height difference
+between adjacent samples exceeds $q/2$. For example, with
+$q=2\,\mu\mathrm{m}$, increments of $+1.4\,\mu\mathrm{m}$ and
+$-0.6\,\mu\mathrm{m}$ yield the same wrapped phase difference.
+
+\paragraph{Repair from exported height fields.}
+Assuming integer-cycle errors and a known conversion, recover
+wrapped phase from the unfiltered heights:
+\[
+\phi_{\mathrm{w}}
+=\operatorname{Arg}\!\left[
+\exp\!\left(i\frac{2\pi h_{\mathrm{obs}}}{q}\right)
+\right].
+\]
+A constant reference offset can be ignored. This recovers wrapped
+phase, not the original hologram. Each wrapped phase corresponds
+to possible heights separated by $q$:
+\[
+h=\frac{q}{2\pi}\phi_{\mathrm{w}}+qk,
+\qquad k\in\mathbb{Z}.
+\]
+Repair therefore, means choosing the correct integer branch at each
+pixel, equivalently, finding an integer correction field $m$:
+\[
+h_{\mathrm{corr}}=h_{\mathrm{obs}}+qm,
+\qquad m(x,y,t)\in\mathbb{Z}.
+\]
+Possible approaches:
+\begin{itemize}
+    \item Spatial or joint space--time unwrapping assuming smoothness among neighbors (skimage.unwrap phase). The problem is that once the phase field is generated, it does not use information from the height field anymore. It might change pixels, which have been correct in the original height field. Especially for high gradients, this can happen 
+    \item Optimize directly for the height field. Assign the integer correction to every pixel. Penalize nonzero corrections to avoid correct pixels being changed. Also request nearest integer cycle adjustment for very large discontinuity. 
+\end{itemize}
+
+
+
+Problems:
+- Algorithm should not alter correct pixels
+- Algorithms tend to smooth out 
+- Algorithms rely on some reference frame, which is hard to find bc of bursts like discontinuities.
+- unknown parameters
+
+
+
+\section{Neural SDE: A First Comparison}
+
+Let $\bm z_n$ denote the reduced state and
+$\bm v_n=\bm z_n-\bm z_{n-1}$ its increments. Using the Euler Maruyama stochastic integrator, the state model and increment model can be distinguished :
+
+SDE state model:
+\[
+\bm z_{n+1}
+ = \bm z_n + \bm h \bm f_\theta(\bm z_n)
+ +   \sqrt{\bm h} \bm G_\theta(\bm z_n)\bm\xi_n   \quad \text{where} \quad \bm\xi_n\sim\mathcal N(\bm 0,\bm I) \quad \text{h: timestep}.
+\]
+
+
+SDE increment model (second-order model for the state):
+\[
+\bm v_{n+1}
+ = \bm v_n + \bm h \bm f_\theta(\bm z_n,\bm v_n)
+ + \sqrt{\bm h} \bm G_\theta(\bm z_n,\bm v_n)\bm\xi_n,
+\qquad
+\bm z_{n+1}=\bm z_n+\bm v_{n+1}  \quad \text{where} \quad \bm\xi_n\sim\mathcal N(\bm 0,\bm I)  \quad \text{h: timestep}.
+\]
+
+
+\paragraph{Drift parameterizations.}
+
+\begin{itemize}
+\setlength{\itemsep}{0.2em}
+
+\item \textbf{Direct neural drift.}
+The drift is represented by an unrestricted feed-forward network,
+$\bm f_\theta(\bm z_n,\bm v_n)$. This is flexible inside the
+training distribution, but if during rollout trajectories leave the training distribution, it has no notion of damping/restoring and can diverge.
+
+\item \textbf{Damped-residual drift.}
+A simple way to enforce some notion of restoring / damping in the increment model is
+\[
+\bm f_\theta(\bm z,\bm v)
+ =-\bm K\bm z-\bm D\bm v
+ +\bm r_\theta(\bm z,\bm v),
+\qquad
+\bm K,\bm D\succeq0.
+\]
+Here, $\bm K$ provides a restoring force and $\bm D$ provides damping. They
+are parameterized either as positive diagonal matrices or as SPSD (via Cholesky). The neural residual $\bm r_\theta(\bm z,\bm v)$ captures nonlinear effects not described by the structured terms. There is no theoretical stability guarantee, but inductive bias.  
+
+\end{itemize}
+
+\paragraph{Diffusion parameterizations.}
+
+For an SDE diffusion factor $\bm G_\theta$, the associated covariance is
+\[
+\bm A_\theta(\bm z,\bm v)
+ =\bm G_\theta(\bm z,\bm v)
+  \bm G_\theta(\bm z,\bm v)^\top
+ \succeq0.
+\]
+Thus, $\bm G_\theta$ itself need not be symmetric or positive definite.
+The Gaussian likelihood used here requires a nonsingular covariance. There are different options to parametrize the diffusion coefficient
+
+\begin{itemize}
+\setlength{\itemsep}{0.2em}
+
+\item \textbf{Constant diagonal} 
+
+\item \textbf{Constant full covariance}
+
+
+\item \textbf{State-dependent diagonal}
+    This can lead to instabilities when rollout leaves the training distribution and diffusion might amplify, which can lead to divergence. This can be mitigated by enforcing a bounded diffusion.
+
+
+\end{itemize}
+
+\paragraph{Multistep likelihood.}
+
+Training only the one-step transition can produce small systematic errors that
+accumulate during long autoregressive rollouts. Multistep training therefore
+adds likelihood terms at selected rollout horizons. Here, the multistep
+transition density is approximated with a Monte Carlo Gaussian mixture
+(Pedersen, 1995; Dietrich et al., Chapter 3C).
+
+Even when the Euler--Maruyama one-step transition is Gaussian, the multistep
+transition generally is not, because the intermediate states are random and
+the dynamics are state dependent. Starting from the same initial condition,
+$M$ particles are rolled out for $h-1$ steps. Each particle then defines a
+Gaussian distribution for the final endpoint velocity, giving
+\[
+\widehat p_\theta^{(h)}(\bm v)
+ =
+ \frac{1}{M}\sum_{m=1}^{M}
+ \mathcal N\!\left(
+   \bm v;\bm\mu_h^{(m)},\bm\Sigma_h^{(m)}
+ \right).
+\]
+The training objective combines the one-step negative log likelihood with
+weighted multistep negative log likelihoods,
+\[
+\mathcal L
+=\mathcal L_{\mathrm{1step}}
++\lambda_{\mathrm{ms}}\sum_{h\in\mathcal H}\mathcal L_{\mathrm{ms},h}.
+\]
+At long horizons, estimating a high-dimensional mixture likelihood is noisy
+and expensive. The increment-correlation analysis showed that higher POD modes
+decorrelate faster. The likelihood dimension is therefore reduced with the
+horizon: the leading energetic POD modes are always retained, while additional
+modes are included only while their training-data increment correlations remain
+relevant. This reduces both the number of evaluated coordinates and the number
+of particles required at long horizons. In the 0p20 case this improved runtime,
+long-rollout energy, and modal amplitudes. A subsequent endpoint-mean
+fine-tuning step further reduced the remaining long-rollout POD mean bias.
+
+
+\paragraph{First comparison.}
+
+\begin{itemize}
+\setlength{\itemsep}{0.15em}
+
+\item Experiment: 0p20.
+\item Shared POD basis with rank $r=20$.
+\item trained on native timestep of 8.68 microseconds
+\item 50\,Hz temporal high-pass filtering of the spatial mean.
+\item 12/2/2 training/validation/test repetition split.
+\item Two hidden layers with 64 neurons each.
+\item SiLU activation functions.
+\item Batch size of 256.
+\item Training for 5 epochs.
+\item Upper 5\% increment trimming.
+\item Evaluation using 50{,}000-step rollouts. Five initial conditions are
+chosen and five stochastic trajectories are generated from each, yielding 25
+generated trajectories and five corresponding reference trajectories.
+
+\end{itemize}
+
+The table should be read as follows:
+\begin{itemize}
+\setlength{\itemsep}{0.15em}
+\item The reference is the measured trajectory reconstructed in the shared
+rank-20 POD space, rather than the full experimental field.
+\item PSDs use the untrimmed reference. Their high-frequency content can
+therefore include discontinuities excluded from model training.
+\item Energy and POD statistics compare untrimmed generated trajectories with
+the reference retained by the checkpoint's 5\% training-increment trim rule.
+Generated trajectories are never trimmed.
+\item POD mean error is the root-mean-square modal mean bias divided by each
+reference mode's standard deviation; its ideal value is 0.
+\item POD variance ratio is
+$\operatorname{tr}(\bm\Sigma_{\mathrm{gen}})/
+\operatorname{tr}(\bm\Sigma_{\mathrm{ref}})$; its ideal value is 1.
+\item POD decorrelation reports generated/reference frame counts. For every
+POD mode, it is the first start of 100 consecutive lags with
+$|\rho|<0.1$; the table gives the median across the 20 modes. All models use
+their first 5{,}001 frames, and similar generated and reference counts are ideal.
+\item All Neural-SDE rows in the table use the validation split.
+\item Stochastic OpInf uses its 5{,}001-frame training rollout because its
+50{,}000-frame rollout diverges.
+\end{itemize}
+
+
+\newcommand{\comparisonplotdir}
+{plots}
+
+\newcommand{\comparisonplot}[1]{%
+  \includegraphics[
+    width=\linewidth,
+    height=5cm,
+    keepaspectratio
+  ]{\comparisonplotdir/#1}%
+}
+
+\newcommand{\failedplot}{%
+  \parbox[c][3.5cm][c]{4.3cm}{%
+    \centering
+    \textit{No valid 50k plot}\\[2mm]
+    All 25 trajectories\\became nonfinite
+  }%
+}
+
+\begin{landscape}
+
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+
+\setlength{\tabcolsep}{3pt}
+
+\begin{longtable}{
+@{}
+>{\RaggedRight\arraybackslash}p{2.0cm}
+>{\RaggedRight\arraybackslash}p{3.4cm}
+>{\centering\arraybackslash}m{5.1cm}
+>{\centering\arraybackslash}m{5.1cm}
+>{\centering\arraybackslash}p{1.5cm}
+>{\centering\arraybackslash}p{1.6cm}
+>{\centering\arraybackslash}p{1.7cm}
+>{\centering\arraybackslash}p{2.3cm}
+@{}
+}
+
+\caption{
+Welch PSD estimates with \(n_{\mathrm{perseg}}=1024\). \textbf{References are the Rank 20 reconstructions, not the experimental data.} The reference PSD is not trimmed. The high-frequency part might come from discontinuities that the neural SDE model does not see during its training. For computational reasons, energies are quadratic approximations to the exact energy. This approximation tends to slightly overestimate the exact energy. For the Energy ratio, the reference energy is trimmed (5\% of the highest L2 increments are not considered)
+}
+\label{tab:neural-sde-method-comparison}
+\\
+
+\toprule
+\textbf{Method}
+&
+\textbf{Model setup}
+&
+\textbf{PSD}
+&
+\textbf{Capillary energy}
+&
+\shortstack{\textbf{Energy}\\\textbf{ratio}}
+&
+{\scriptsize\shortstack{\textbf{POD mean}\\\textbf{error}}}
+&
+{\tiny\shortstack{\textbf{POD variance}\\\textbf{ratio}}}
+&
+{\tiny\shortstack{\textbf{POD decorrelation}\\\textbf{gen./ref. [frames]}}}
+\\
+\midrule
+\endfirsthead
+
+\multicolumn{8}{c}{%
+  \tablename\ \thetable{} -- continued from previous page
+}
+\\
+\toprule
+\textbf{Method}
+&
+\textbf{Model setup}
+&
+\textbf{PSD}
+&
+\textbf{Capillary energy}
+&
+\shortstack{\textbf{Energy}\\\textbf{ratio}}
+&
+{\scriptsize\shortstack{\textbf{POD mean}\\\textbf{error}}}
+&
+{\tiny\shortstack{\textbf{POD variance}\\\textbf{ratio}}}
+&
+{\tiny\shortstack{\textbf{POD decorrelation}\\\textbf{gen./ref. [frames]}}}
+\\
+\midrule
+\endhead
+
+\midrule
+\multicolumn{8}{r}{Continued on next page}
+\\
+\endfoot
+
+\bottomrule
+\endlastfoot
+
+% ------------------------------------------------------------------
+
+SDE state model
+&
+SDE state model;
+MLP drift;
+constant diagonal diffusion.
+&
+\failedplot
+&
+\failedplot
+&
+--- 
+&
+---
+&
+---
+&
+---
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Increment
+&
+2nd order SDE formulation;
+MLP drift;
+constant diagonal diffusion.
+&
+\comparisonplot{psd/02_velocity_lag1_psd.png}
+&
+\comparisonplot{energy/02_velocity_lag1_energy.png}
+&
+\(3.418\)
+&
+\(0.294\)
+&
+\(3.488\)
+&
+\(14/20\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Increment with history
+&
+2nd order SDE formulation;
+history offsets
+\(\{1,2,3,4,5,10,20\}\);
+MLP drift;
+constant diagonal diffusion.
+&
+\comparisonplot{psd/04_velocity_sparse_history_psd.png}
+&
+\comparisonplot{energy/04_velocity_sparse_history_energy.png}
+&
+\(2.091\)
+&
+\(0.132\)
+&
+\(2.279\)
+&
+\(26.5/18.5\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Increment with Constant full
+diffusion
+&
+2nd order SDE formulation;
+MLP drift;
+constant full diffusion (parametrized with Cholesky decomposition),
+giving an SPSD covariance \(GG^{\mathsf T}\).
+&
+\comparisonplot{psd/05_constant_full_diffusion_psd.png}
+&
+\comparisonplot{energy/05_constant_full_diffusion_energy.png}
+&
+\(2.846\)
+&
+\(0.183\)
+&
+\(3.181\)
+&
+\(14/20\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+state-dependent diagonal
+diffusion
+&
+2nd order SDE formulation;
+MLP drift;
+state-dependent diagonal diffusion
+&
+\comparisonplot{psd/06_bounded_state_diffusion_psd.png}
+&
+\comparisonplot{energy/06_bounded_state_diffusion_energy.png}
+&
+\(1.540\)
+&
+\(0.123\)
+&
+\(1.520\)
+&
+\(20/20\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Damped residual
+drift
+&
+2nd order SDE formulation;
+positive diagonal stiffness and damping
+plus a residual MLP;
+constant diagonal diffusion.
+&
+\comparisonplot{psd/07_damped_drift_psd.png}
+&
+\comparisonplot{energy/07_damped_drift_energy.png}
+&
+\(1.244\)
+&
+\(0.092\)
+&
+\(1.191\)
+&
+\(22.5/20\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Multistep
+likelihood
+&
+2nd order SDE formulation;
+MLP drift;
+constant diagonal diffusion;
+multistep endpoint-velocity likelihood at
+\(H=\{2,4,10,20\}\), with weight \(0.1\).
+&
+\comparisonplot{psd/08_multistep_psd.png}
+&
+\comparisonplot{energy/08_multistep_energy.png}
+&
+\(1.143\)
+&
+\(0.206\)
+&
+\(1.076\)
+&
+\(17.5/20\)
+\\
+\addlinespace
+
+Combined Neural SDE
+(best model)
+&
+Combination of multistep training, damped-residual drift, and
+state-dependent diffusion.
+&
+\comparisonplot{psd/10_best_model_psd.png}
+&
+\comparisonplot{energy/10_best_model_energy.png}
+&
+\(1.088\)
+&
+\(0.058\)
+&
+\(1.040\)
+&
+\(19/20\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+
+Stochastic OpInf
+&
+ABN operator inference without regularization;
+5{,}001-frame training rollout.
+&
+\comparisonplot{psd_stoch_opinf.png}
+&
+\comparisonplot{energy_stoch_opinf.png}
+&
+\(4.452\)
+&
+\(0.201\)
+&
+\(4.820\)
+&
+\(530.5/18\)
+\\
+\addlinespace
+
+% ------------------------------------------------------------------
+\end{longtable}
+
+\end{landscape}
+
+
+
+
+
+\newcommand{\resultplotdir}{plots/amp}
+
+\clearpage
+\begin{landscape}
+To show that the neural SDE also works for the non-0p20 case, here are some results for the 0p10 (low amplitude) and 0p30 (high amplitude) cases. 0p10 I need to tune parameters to perhaps get a better PSD. 0p30, a very simple model works surprisingly well. 
+
+The POD metrics use the definitions given above. The 0p10 reference is
+training-trimmed, while the older 0p30 modal diagnostic uses the untrimmed
+reference.
+
+\setlength{\tabcolsep}{3pt}
+
+\begin{longtable}{
+@{}
+>{\centering\arraybackslash}p{2.0cm}
+>{\RaggedRight\arraybackslash}p{3.4cm}
+>{\centering\arraybackslash}m{5.1cm}
+>{\centering\arraybackslash}m{5.1cm}
+>{\centering\arraybackslash}p{1.5cm}
+>{\centering\arraybackslash}p{1.6cm}
+>{\centering\arraybackslash}p{1.7cm}
+>{\centering\arraybackslash}p{2.3cm}
+@{}
+}
+
+
+
+
+\toprule
+\textbf{Case} &
+\textbf{Model setup} &
+\textbf{PSD} &
+\textbf{Energy} &
+\shortstack{\textbf{Energy}\\\textbf{ratio}} &
+{\scriptsize\shortstack{\textbf{POD mean}\\\textbf{error}}} &
+{\tiny\shortstack{\textbf{POD variance}\\\textbf{ratio}}} &
+{\tiny\shortstack{\textbf{POD decorrelation}\\\textbf{gen./ref. [frames]}}} \\
+\midrule
+
+0p10 &
+ damped-residual drift with SPSD operators;
+constant full diffusion; multistep horizons 2 and 5
+&
+\includegraphics[
+    width=\linewidth,
+    height=5cm,
+    keepaspectratio
+]{\resultplotdir/psd\_0p10.png} &
+\includegraphics[
+    width=\linewidth,
+    height=5cm,
+    keepaspectratio
+]{\resultplotdir/energy\_0p10.png} &
+1.183 &
+0.262 &
+1.007 &
+171/89 \\
+
+\midrule
+
+0p30 &
+ MLP drift; constant diagonal diffusion
+&
+\includegraphics[
+    width=\linewidth,
+    height=5cm,
+    keepaspectratio
+]{\resultplotdir/psd\_0p30.png} &
+\includegraphics[
+    width=\linewidth,
+    height=5cm,
+    keepaspectratio
+]{\resultplotdir/energy0p30.png} &
+1.154 &
+0.127 &
+1.108 &
+6/5 \\
+
+\bottomrule
+
+\label{tab:neural-sde-case-comparison}
+
+\end{longtable}
+
+\end{landscape}
+\clearpage
+
+
+\begin{figure}[htbp]
+    \centering
+
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{nerual_sde_traj.png}
+        \caption{Neural-SDE trajectory.}
+        \label{fig:neural-sde-trajectory}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[t]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{stoch_opinf_rollout.png}
+        \caption{Stochastic OpInf trajectory.}
+        \label{fig:stochastic-opinf-trajectory}
+    \end{subfigure}
+
+    \caption{Comparison of exemplary Neural-SDE and stochastic OpInf rollouts for 0p20 for 500 timesteps.}
+    \label{fig:trajectory-comparison}
+\end{figure}
+
+\end{document}
