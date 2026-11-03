@@ -1,0 +1,388 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_ds8_long_joint_es",
+  "training_timeout_seconds": 10800,
+  "scientific_goal": "Calibrate the existing factor-eight downsampled 0p10 TCN63 using longer joint-state energy-score rollouts. Reduce excess energy/covariance while recovering reproducible validation resonance peaks at 100-1500 Hz. Quantify objective gradients, their conflicts and Monte Carlo noise instead of selecting on total loss.",
+  "scientific_constraints": [
+    "Use validation repetitions 13,14 only for decisions and training repetitions 1-12 for optimization. Test repetitions 15,16 stay locked.",
+    "All trained trials warm-start from current_energy_moments or its descendants. one_step_baseline is evaluation-only. Preserve factor8 FIR preparation, edge trim32, prepared lag1, HP50 spatial mean, zero training trim, rank20, TCN63 channels64 kernel3 dilations1,2,4,8,16, diagonal structured stiffness/damping and diagonal diffusion. No architecture, preprocessing or new-loss implementation changes.",
+    "Prepared timestep is 69.444 microseconds: horizons20,100,200 span1.389,6.944,13.889ms. Horizon400 spans27.778ms. Screens6250 steps correspond to50000 native intervals; confirmations12000 correspond to96000. Do not request50000 coarse-step validation rollouts.",
+    "First evaluate both imported checkpoints on identical6250-step 5x5 validation screens and run fixed gradient audits. Existing12000 current-model rollout has energy2.15, POD trace2.36, mean variance1.94, peak contrast error3.812dB and band power1.595; these are historical context, not matched6250 comparison values.",
+    "Queued controls are one-epoch continuations from the exact same current_energy_moments parent: weight0 with unchanged moments, joint h20,100,200 score weight0.3, and weight1.0. All use lr1e-5,batch128,seed0; score arms use M8, examples fraction0.03125 and horizon weights0.1,0.3,0.6, position/velocity metric2/1, gradients drift+diffusion. This isolates score presence and dose within this new recipe, not each difference from historical velocity-only training.",
+    "Keep mean0.03/variance0.001 fixed for initial comparisons. A later same-parent removal of moments is allowed if audit shows conflict. Do not increase moments and energy-score weight simultaneously.",
+    "Report per-horizon validation scores, actual checkpoint epoch, same-parent rollout changes, per-horizon gradient norms/cosines with NLL and each other, drift/diffusion group contributions, and within/between sampled-window and particle-seed variability. Loss magnitude ratios are not gradient ratios.",
+    "The fixed audit uses h20,100,200, weights0.1,0.3,0.6, position/velocity2/1, M8 and score coefficient1 for ALL checkpoints. Actual training coefficients may differ; rescale the fixed gradient vectors when discussing their actual effective contributions. Fixed M8 audits do NOT measure M16 estimator noise directly; any claimed noise reduction requires a supplementary matched fixed-checkpoint audit or describe the limitation explicitly.",
+    "If increasing particles, use a same-parent M8 versus M16 pair with identical objective weight, fraction, batch size and lr. M32 only if M16 remains noisy and memory allows. Distinguish more particles per start from more independent starts; fraction0.0625 or0.125 must have a same-parent lower-fraction control. Do not change particle count and fraction together.",
+    "Prioritize genuine improvement of fixed long-horizon scores and the reference-selected peak contrasts, alongside band power and stable amplitudes. A lower total loss across different coefficients is not comparable. Near-unit aggregate variance does not establish resonance recovery.",
+    "Use the peak metric and individual reference/generated peak contrasts. Primary spectral band100-1500Hz; do not penalize removed above-Nyquist native power. All references use checkpoint preparation. Whole-record ACF threshold crossings are not proof of permanent decorrelation.",
+    "Reject nonfinite paths, peak standardized POD RMS>10 or absolute coordinate>50. Broad screen gates energy and covariance[0.35,4] are failure bounds, not quality targets. Target energy/PODtrace approximately0.9-1.1 and improve peak contrast error. Do not accept variance collapse, worsening resonance contrast, or >2% validation NLL degradation without explicit evidence and justification.",
+    "Weight3 is allowed only after a stable matched weight1 trial with useful gradients but weak effects. Weight10 only after stable weight3 with persistent excess. Horizon400 requires a same-parent h200 continuation control and evidence the h200 gradient is finite and useful. Reduce lr for unstable/clipped updates rather than blindly raising weights.",
+    "At most10 training jobs and2 confirmations. Preserve completed outputs; no clipping generated trajectories, no source-HDF5 changes. Stop honestly on exhausted useful comparisons. Do not repeat failed diagnostics forever or relabel an unconfirmed screen as success."
+  ],
+  "advisor_guidance": "The user authorizes this unattended study for a few hours and specifically wants stronger long-rollout supervision and gradient/noise tracking. Complete the queued matched arms, then choose bounded evidence-based continuations. We previously copied a GMM coefficient into velocity energy score and saw essentially no h20 improvement; treat this as a calibration study, not a proven downsampling failure. The anti-alias preparation preserves 100-1500Hz peaks within0.012dB in validation rep13. Work from current_energy_moments/descendants only. Use common-parent comparisons; particle-count trials should be compared to a fresh M8 arm from that same parent unless the original M8 arm shares the exact parent. The advisor may read diagnostic gradient_samples.npz and logs but must not launch extra training itself. Explicitly distinguish fixed-audit settings from actual training. If gradients show high particle noise, the configured M16 noise probe on the current checkpoint provides a fixed-checkpoint comparison against M8 before training. Check peak spectra, not only broad PSD envelope. The horizon200 terms should improve measurably; if they do not, analyze before extending to400.",
+  "budget": {
+    "max_training_trials": 10,
+    "max_confirmations": 2
+  },
+  "max_overrides_per_trial": 7,
+  "allowed_training_modes": [
+    "finetune"
+  ],
+  "base_train_options": {
+    "--train-mode": "joint",
+    "--train-trim-percent": 0,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-weight": 0.3,
+    "--multistep-horizons": [
+      20,
+      100,
+      200
+    ],
+    "--multistep-horizon-weights": [
+      0.1,
+      0.3,
+      0.6
+    ],
+    "--multistep-position-weight": 2,
+    "--multistep-velocity-weight": 1,
+    "--multistep-particle-counts": [
+      8,
+      8,
+      8
+    ],
+    "--multistep-window-fraction": 0.03125,
+    "--multistep-window-sampling": "examples",
+    "--multistep-gradient-groups": [
+      "drift",
+      "diffusion"
+    ],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0.03,
+    "--stationary-variance-weight": 0.001,
+    "--stationary-mean-horizons": [
+      20,
+      50,
+      100
+    ],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.0125,
+    "--stationary-mean-validation-seed": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--learning-rate": 0.00001,
+    "--batch-size": 128,
+    "--epochs": 1,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [
+      [
+        0
+      ],
+      [
+        0.03
+      ],
+      [
+        0.1
+      ],
+      [
+        0.3
+      ],
+      [
+        1
+      ],
+      [
+        3
+      ],
+      [
+        10
+      ]
+    ],
+    "--multistep-horizons": [
+      [
+        20,
+        100,
+        200
+      ],
+      [
+        20,
+        100,
+        400
+      ]
+    ],
+    "--multistep-horizon-weights": [
+      [
+        0.1,
+        0.3,
+        0.6
+      ]
+    ],
+    "--multistep-particle-counts": [
+      [
+        8,
+        8,
+        8
+      ],
+      [
+        16,
+        16,
+        16
+      ],
+      [
+        32,
+        32,
+        32
+      ]
+    ],
+    "--multistep-window-fraction": [
+      [
+        0.03125
+      ],
+      [
+        0.0625
+      ],
+      [
+        0.125
+      ]
+    ],
+    "--multistep-gradient-groups": [
+      [
+        "drift"
+      ],
+      [
+        "drift",
+        "diffusion"
+      ]
+    ],
+    "--learning-rate": [
+      [
+        0.00001
+      ],
+      [
+        0.00003
+      ],
+      [
+        0.000003
+      ],
+      [
+        "1e-5"
+      ],
+      [
+        "3e-5"
+      ],
+      [
+        "3e-6"
+      ]
+    ],
+    "--epochs": [
+      [
+        1
+      ]
+    ],
+    "--stationary-mean-weight": [
+      [
+        0
+      ],
+      [
+        0.03
+      ]
+    ],
+    "--stationary-variance-weight": [
+      [
+        0
+      ],
+      [
+        0.001
+      ]
+    ]
+  },
+  "screen_seed_runs": true,
+  "objective_balance_particle_probe": {
+    "trial": "current_energy_moments",
+    "output_name": "objective_balance_ds8_h200_m16_probe_v1",
+    "particle_counts": [16, 16, 16]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [
+      0.35,
+      4
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.35,
+      4
+    ]
+  },
+  "objective_balance_diagnostic": {
+    "split": "validation",
+    "device": "cuda",
+    "windows": 16,
+    "moment_trajectories": 16,
+    "moment_horizons": [
+      20,
+      50,
+      100
+    ],
+    "window_seed": 41019,
+    "window_seeds": [
+      41019,
+      41020,
+      41021,
+      41022
+    ],
+    "seeds": [
+      51019,
+      51020,
+      51021
+    ],
+    "min_history": 63,
+    "timeout_seconds": 3600,
+    "output_name": "objective_balance_ds8_h200_m8_v1",
+    "multistep_objective": "energy_score",
+    "multistep_target": "joint",
+    "multistep_horizons": [
+      20,
+      100,
+      200
+    ],
+    "multistep_horizon_weights": [
+      0.1,
+      0.3,
+      0.6
+    ],
+    "multistep_particle_counts": [
+      8,
+      8,
+      8
+    ],
+    "multistep_position_weight": 2,
+    "multistep_velocity_weight": 1,
+    "multistep_weight": 1,
+    "multistep_fraction": 0.03125,
+    "multistep_gradient_groups": [
+      "drift",
+      "diffusion"
+    ],
+    "mean_weight": 0.03,
+    "variance_weight": 0.001,
+    "moment_fraction": 0.0125
+  },
+  "screen": {
+    "horizon": 6250,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "batch_size": 5,
+    "device": "cuda",
+    "seed": 82310,
+    "nperseg": 1024,
+    "peak_nperseg": 1024,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      20
+    ]
+  },
+  "confirmation": {
+    "horizon": 12000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "batch_size": 5,
+    "device": "cuda",
+    "seed": 92310,
+    "nperseg": 1024,
+    "peak_nperseg": 1024,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      20
+    ]
+  },
+  "seed_runs": [
+    {
+      "id": "current_energy_moments",
+      "run_dir": "runs/comparison/neural_sde_0p10_tcn63_downsample8_energy_score/energy_moments",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_tcn63_downsample8_energy_score/energy_moments/rollout_12000_validation_5x5",
+      "hypothesis": "Existing overdispersed coarse model; common parent for calibration.",
+      "change_family": "imported_current"
+    },
+    {
+      "id": "one_step_baseline",
+      "run_dir": "runs/comparison/neural_sde_0p10_tcn63_downsample8_energy_score/onestep",
+      "hypothesis": "Matched evaluation determines whether fine-tuning improved or harmed the original one-step model.",
+      "change_family": "evaluation_only"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "same_parent_no_es_control",
+      "training_mode": "finetune",
+      "parent_trial": "current_energy_moments",
+      "change_family": "score_control",
+      "hypothesis": "One-step plus unchanged moments continuation controls for ordinary optimization.",
+      "expected_observation": "Provides matched control for long-score arms; no assumed improvement.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "joint_h200_w0p3_m8",
+      "training_mode": "finetune",
+      "parent_trial": "current_energy_moments",
+      "change_family": "long_joint_score",
+      "hypothesis": "Joint-state score through13.9ms penalizes excessive position spread and missing dynamics.",
+      "expected_observation": "Fixed h100/h200 score decreases; amplitude and peak fidelity improve beyond control.",
+      "overrides": []
+    },
+    {
+      "id": "joint_h200_w1_m8",
+      "training_mode": "finetune",
+      "parent_trial": "current_energy_moments",
+      "change_family": "score_weight",
+      "hypothesis": "Stronger long joint-score pressure changes dynamics more than weight0.3 from identical parent.",
+      "expected_observation": "Larger finite long-score and rollout improvements without variance collapse or NLL regression.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "1"
+          ],
+          "remove": false
+        }
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

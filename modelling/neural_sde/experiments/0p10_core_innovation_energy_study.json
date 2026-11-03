@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_core_innovation_energy_v1",
+  "training_timeout_seconds": 900,
+  "scientific_goal": "Bounded continuation of the rank19 core-innovation TCN: NLL control versus joint endpoint energy scores.",
+  "scientific_constraints": [
+    "All arms start from the same frozen epoch-five best.pt snapshot; never chain arms.",
+    "Keep rank19, frozen imported operators, core_innovation TCN63, constant diagonal diffusion, native sampling and no trim.",
+    "Validation reps13/14 only; no test evaluation.",
+    "Same learning rate1e-4, two additional epochs, seed0, batch256; compare objectives only.",
+    "Use four particles, horizons2/5/10, example fraction0.02, joint position-displacement/velocity scoring and drift+diffusion gradients.",
+    "No energy/moment penalties in this first comparison. Energy score is not physical wave energy.",
+    "Training cap900seconds each; failed or timed-out trials are not resumed.",
+    "Screen parent and all arms at5000steps using identical seed and starts. Confirm each passing arm and parent at90000steps with same seed, reference and Welch8192.",
+    "Keep PSD peak contrast separate from band power and physical energy. Short-horizon score does not directly enforce peaks.",
+    "Three declared trials only; driver performs fixed confirmations then stops."
+  ],
+  "advisor_guidance": "Fixed bounded grid; no additional training or architecture changes.",
+  "budget": {
+    "max_training_trials": 3,
+    "max_confirmations": 4
+  },
+  "max_overrides_per_trial": 1,
+  "allowed_training_modes": [
+    "finetune"
+  ],
+  "base_train_options": {
+    "--train-mode": "joint",
+    "--train-trim-percent": 0,
+    "--learning-rate": 0.0001,
+    "--batch-size": 256,
+    "--epochs": 2,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--no-tcn-rollout-compile": true,
+    "--multistep-weight": 0.3,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-horizons": [
+      2,
+      5,
+      10
+    ],
+    "--multistep-horizon-weights": [
+      1,
+      1,
+      1
+    ],
+    "--multistep-particle-counts": [
+      4,
+      4,
+      4
+    ],
+    "--multistep-window-fraction": 0.02,
+    "--multistep-window-sampling": "examples",
+    "--multistep-gradient-groups": [
+      "drift",
+      "diffusion"
+    ],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stability-weight": 0
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [
+      [
+        0
+      ],
+      [
+        0.3
+      ],
+      [
+        1.0
+      ]
+    ]
+  },
+  "screen_seed_runs": true,
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 25,
+    "max_peak_absolute_standardized_coordinate": 100,
+    "energy_ratio_range": [
+      0.02,
+      20
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.02,
+      20
+    ]
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 2,
+    "ensemble_size": 2,
+    "batch_size": 2,
+    "device": "cpu",
+    "seed": 2710,
+    "nperseg": 4096,
+    "peak_nperseg": 4096,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      5,
+      10,
+      19
+    ]
+  },
+  "confirmation": {
+    "horizon": 90000,
+    "conditions": 1,
+    "ensemble_size": 1,
+    "batch_size": 1,
+    "device": "cpu",
+    "seed": 2710,
+    "nperseg": 8192,
+    "peak_nperseg": 8192,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      5,
+      10,
+      19
+    ]
+  },
+  "seed_runs": [
+    {
+      "id": "parent_e5",
+      "run_dir": "runs/adaptive/neural_sde_0p10_core_innovation_energy_v1/seeds/parent_e5",
+      "hypothesis": "Unchanged epoch-five checkpoint; matched baseline evaluation.",
+      "change_family": "parent_control"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "nll_control_e2",
+      "training_mode": "finetune",
+      "parent_trial": "parent_e5",
+      "change_family": "objective_weight",
+      "hypothesis": "Compare two additional epochs from identical forcing-history checkpoint; weight 0",
+      "expected_observation": "Measure stability, amplitude, covariance and narrow peaks independently of conditional NLL.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "joint_es_w0p3_e2",
+      "training_mode": "finetune",
+      "parent_trial": "parent_e5",
+      "change_family": "objective_weight",
+      "hypothesis": "Compare two additional epochs from identical forcing-history checkpoint; weight 0.3",
+      "expected_observation": "Measure stability, amplitude, covariance and narrow peaks independently of conditional NLL.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0.3"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "joint_es_w1_e2",
+      "training_mode": "finetune",
+      "parent_trial": "parent_e5",
+      "change_family": "objective_weight",
+      "hypothesis": "Compare two additional epochs from identical forcing-history checkpoint; weight 1.0",
+      "expected_observation": "Measure stability, amplitude, covariance and narrow peaks independently of conditional NLL.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "1.0"
+          ],
+          "remove": false
+        }
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "manual"
+  }
+}

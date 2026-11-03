@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_objective_comparison",
+  "scientific_goal": "Determine whether endpoint mean and variance matching can replace the noisy Monte Carlo GMM multistep objective as the mechanism that corrects the simple velocity-lag-1 model's excess POD amplitude while preserving its temporal spectrum and rollout stability.",
+  "scientific_constraints": [
+    "Start every matched arm from runs/comparison/velocity_lag1/best.pt; do not change model architecture, data split, normalization, lag, or the saved 5 percent trimming rule.",
+    "Run the queued one-step continuation, canonical multistep-only, and canonical endpoint-moments-only arms before adaptive tuning.",
+    "Tune and select only on validation repetitions 13 and 14; keep test repetitions 15 and 16 locked.",
+    "Treat energy, modal amplitude and covariance, mean bias, PSD and ACF, rollout survival, and one-step NLL as separate evidence.",
+    "A moment objective may correct marginal amplitude without recovering conditional or temporal dynamics; a multistep objective may regularize closed-loop dynamics even when its finite-particle likelihood estimate is noisy.",
+    "After the canonical arms, change only one objective family at a time. A combined objective is allowed only after the separate effects are established.",
+    "Use the same learning rate, epoch count, training trim, rollout seeds, and validation protocol for matched comparisons unless a later trial explicitly tests optimization sensitivity."
+  ],
+  "advisor_guidance": "The imported simple parent has approximately 3.10 times untrimmed energy and 3.21 times POD covariance trace, with a center PSD error factor near 2.54. The controller automatically queues three matched five-epoch fine-tunes before asking for a decision: one-step-only continuation, multistep-only using horizons 2,5,10,20,30 with mode counts 20,15,10,3,3 and particle counts 64,64,64,24,12, and endpoint moments using mean weight 0.01, variance weight 0.001, horizon 500, and 30 trajectories. First decide whether moments reproduce the amplitude correction without degrading PSD, ACF, NLL, or stability. If further evidence is justified, make a bounded change to either the multistep schedule or the moment horizon/weights, not both. Coupled multistep horizon, mode-count, and particle-count schedules must be overridden together. Do not use the locked test split for selection.",
+  "budget": {
+    "max_training_trials": 7,
+    "max_confirmations": 2
+  },
+  "max_overrides_per_trial": 5,
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.1,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5, 10, 20, 30],
+    "--multistep-mode-counts": [20, 15, 10, 3, 3],
+    "--multistep-particle-counts": [64, 64, 64, 24, 12],
+    "--multistep-window-fraction": 0.1,
+    "--multistep-window-sampling": "batches",
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-mean-horizon": 500,
+    "--stationary-mean-trajectories": 30,
+    "--stationary-mean-batch-fraction": 0.05,
+    "--stationary-mean-validation-seed": 0,
+    "--learning-rate": 0.0001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [[0], [0.03], [0.1]],
+    "--multistep-horizons": [[2, 5], [2, 5, 10], [2, 5, 10, 20], [2, 5, 10, 20, 30]],
+    "--multistep-mode-counts": [[20, 15], [20, 15, 10], [20, 15, 10, 3], [20, 15, 10, 3, 3]],
+    "--multistep-particle-counts": [[64, 64], [64, 64, 64], [64, 64, 32, 16], [64, 64, 64, 24, 12], [128, 128, 64, 32, 16]],
+    "--stationary-mean-weight": [[0], [0.005], [0.01], [0.03]],
+    "--stationary-variance-weight": [[0], [0.0001], [0.001], [0.003]],
+    "--stationary-mean-horizon": [[100], [200], [500]],
+    "--stationary-mean-horizons": [[100, 200, 500]],
+    "--stationary-mean-trajectories": [[30], [60]],
+    "--stationary-mean-batch-fraction": [[0.05], [0.1]],
+    "--learning-rate": [[0.00005], [0.0001], [0.0003]],
+    "--epochs": [[3], [5]]
+  },
+  "screen": {
+    "horizon": 10000,
+    "conditions": 5,
+    "ensemble_size": 3,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "simple_velocity_lag1_parent",
+      "run_dir": "runs/comparison/velocity_lag1",
+      "rollout_dir": "runs/comparison/velocity_lag1/rollout_50000_native",
+      "hypothesis": "The simple velocity-lag-1 checkpoint supplies useful local and spectral dynamics but substantially overestimates POD amplitude.",
+      "change_family": "seed_control"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "one_step_continuation",
+      "training_mode": "finetune",
+      "parent_trial": "simple_velocity_lag1_parent",
+      "hypothesis": "Additional one-step training alone does not remove the parent's large stationary amplitude excess.",
+      "change_family": "one_step_control",
+      "expected_observation": "One-step NLL may improve, but energy and POD covariance remain substantially above the trimmed reference.",
+      "overrides": [
+        {"flag": "--multistep-weight", "tokens": ["0"], "remove": false}
+      ]
+    },
+    {
+      "id": "canonical_multistep_only",
+      "training_mode": "finetune",
+      "parent_trial": "simple_velocity_lag1_parent",
+      "hypothesis": "Closed-loop endpoint likelihood reduces excess amplitude by correcting states reached under the model's own recurrence.",
+      "change_family": "multistep",
+      "expected_observation": "Energy and leading-mode covariance approach the trimmed reference while PSD, ACF, NLL, and stability remain acceptable.",
+      "overrides": []
+    },
+    {
+      "id": "canonical_endpoint_moments",
+      "training_mode": "finetune",
+      "parent_trial": "simple_velocity_lag1_parent",
+      "hypothesis": "Direct endpoint mean and variance matching corrects excess amplitude more efficiently than the particle-degenerate GMM objective.",
+      "change_family": "endpoint_moments",
+      "expected_observation": "Energy and POD covariance approach the trimmed reference with PSD and ACF at least as good as the multistep-only arm.",
+      "overrides": [
+        {"flag": "--multistep-weight", "tokens": ["0"], "remove": false},
+        {"flag": "--stationary-mean-weight", "tokens": ["0.01"], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": ["0.001"], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

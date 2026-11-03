@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn_bounded_diffusion_objective_balance",
+  "training_timeout_seconds": 3600,
+  "scientific_goal": "Test whether bounded state-dependent diagonal diffusion improves the 0p20 restoring TCN15 rollout, and whether training the energy-score and stationary mean/variance objectives together from epoch one reaches a better-calibrated solution than post-hoc moment fine-tuning.",
+  "scientific_constraints": [
+    "Use validation repetitions 13 and 14 only for selection. Test repetitions 15 and 16 remain locked.",
+    "Preserve rank 20, the restoring-only TCN15 drift, stored 50 Hz high-pass spatial mean, native-lag velocity state, exact 5 percent training trim, optimizer settings, seed 0, and five fresh epochs.",
+    "Retain the joint displacement-velocity energy score at horizons 2,4,10,20 with equal horizon weights, position weight 2, velocity weight 1, four particles, total weight 0.03, 0.5 percent batch sampling, and drift-plus-diffusion gradient routing.",
+    "Use the existing full constant-diffusion joint-score checkpoint only as an immutable external reference. Every trained candidate must start from a fresh initialization; do not continue any checkpoint.",
+    "Run exactly three matched initial trials: bounded state-dependent diagonal diffusion without moment penalties, full constant diffusion with mean and variance penalties from epoch one, and bounded state-dependent diagonal diffusion with the same penalties from epoch one.",
+    "For combined-objective arms, use mean weight 0.01 and variance weight 0.01 from epoch one at endpoints 100,200,500, with 64 measured starts and 1.25 percent batch sampling.",
+    "Bounded diffusion uses log range 0.5, so each learned diagonal scale multiplier lies between exp(-0.5) and exp(0.5). Because the full reference has cross-coordinate covariance while bounded_state_diagonal is diagonal, describe this as the effect of the bounded-diagonal replacement, not a pure state-dependence ablation.",
+    "For every checkpoint, save the complete per-epoch objective history and a frozen validation diagnostic comparing raw gradients, epoch-expected weighted gradients, selected-update gradients, stochastic gradient noise, and pairwise objective cosine for one-step NLL, joint energy score, stationary mean, and stationary variance.",
+    "Do not choose weights merely by equalizing Euclidean gradient norms. Use gradient evidence to identify objectives that are negligible, violently rescaled on selected batches, noisy, or locally conflicting, and require rollout improvement for any scientific conclusion.",
+    "Screen every candidate on the same 32 full-strength validation paths for 5000 steps. Primary metrics use the checkpoint-trimmed reference for deformation energy, POD mean, POD covariance, leading-mode variance, and spatial-mean statistics. Also inspect PSD, innovation calibration, survival, and boundedness.",
+    "After all three initial trials, permit at most one additional fresh calibration trial. It may alter only the two moment weights and multistep gradient routing within the declared alternatives, while retaining either full or bounded diffusion as justified by the matched evidence.",
+    "Promote at most one candidate to 50000 validation steps only if it materially improves energy and covariance together without unacceptable mean, PSD, innovation, or stability degradation. Otherwise stop."
+  ],
+  "advisor_guidance": "First separate the comparisons: bounded ES-only versus the imported full ES-only reference estimates the practical bounded-diagonal replacement effect; full combined versus the imported reference estimates moments-from-start under full diffusion; bounded combined versus bounded ES-only estimates moments-from-start under bounded diffusion; full combined versus bounded combined estimates their interaction under matched combined objectives. Read each trial's training.history and objective_balance fields. Compare epoch-expected norms with selected-update norms: the latter include 1/f and diagnose rare large Adam updates, while the former describe the average objective pressure. Inspect gradient noise and drift/diffusion cosines. A negative cosine is local conflict, not proof that two objectives cannot coexist. The diagnostic is frozen-checkpoint evidence and cannot replace rollout results. The single adaptive trial should address one evidenced calibration problem: choose moment weights 0.003, 0.01, or 0.03 and optionally route the energy score to drift only if its diffusion gradient is noisy or conflicts with variance/NLL. Do not alter horizons, TCN, particles, data, trim, learning rate, epochs, or add another loss.",
+  "budget": {
+    "max_training_trials": 4,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 5,
+  "allowed_training_modes": ["fresh"],
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p20/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--no-structured-damping": true,
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 15,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [1, 2, 4],
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-horizons": [2, 4, 10, 20],
+    "--multistep-horizon-weights": [1, 1, 1, 1],
+    "--multistep-position-weight": 2,
+    "--multistep-velocity-weight": 1,
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift", "diffusion"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stationary-mean-horizons": [100, 200, 500],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.0125,
+    "--stationary-mean-validation-seed": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--history-noise-weight": 0,
+    "--stability-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--diffusion-type": [["full"], ["bounded_state_diagonal"]],
+    "--diffusion-log-range": [null, [0.5]],
+    "--stationary-mean-weight": [[0], [0.003], [0.01], [0.03]],
+    "--stationary-variance-weight": [[0], [0.003], [0.01], [0.03]],
+    "--multistep-gradient-groups": [["drift"], ["drift", "diffusion"]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.35, 3.0],
+    "pod_covariance_trace_ratio_range": [0.35, 3.0]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "objective_balance_diagnostic": {
+    "split": "validation",
+    "device": "cuda",
+    "windows": 64,
+    "moment_trajectories": 32,
+    "moment_horizons": [100, 200, 500],
+    "window_seed": 41019,
+    "seeds": [51019, 51020],
+    "timeout_seconds": 1800,
+    "output_name": "objective_balance_diagnostic"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 41814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "full_es_only_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5/rollout_5000_screen",
+      "hypothesis": "The existing fresh full constant-diffusion joint-score TCN is the matched no-moment reference.",
+      "change_family": "external_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_tcn15_bounded_es_only_e5",
+      "training_mode": "fresh",
+      "parent_trial": "full_es_only_reference",
+      "change_family": "bounded_diagonal_diffusion",
+      "hypothesis": "A bounded state-dependent diagonal diffusion reallocates conditional noise across state and history and reduces autonomous amplitude excess without moment penalties.",
+      "expected_observation": "Energy and leading-mode covariance move toward one relative to the full ES-only reference while conditional calibration, PSD, and mean remain acceptable.",
+      "overrides": [
+        {"flag": "--diffusion-type", "tokens": ["bounded_state_diagonal"], "remove": false},
+        {"flag": "--diffusion-log-range", "tokens": [0.5], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_es_mean0p01_var0p01_e5",
+      "training_mode": "fresh",
+      "parent_trial": "full_es_only_reference",
+      "change_family": "moments_from_initialization",
+      "hypothesis": "Optimizing endpoint mean and variance from epoch one avoids the overdispersed continuation basin observed during post-hoc moment refinement.",
+      "expected_observation": "The full-diffusion model improves trimmed-reference mean and covariance together relative to the ES-only reference, with the loss history showing active nonvanishing moment pressure.",
+      "overrides": [
+        {"flag": "--stationary-mean-weight", "tokens": [0.01], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": [0.01], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_bounded_es_mean0p01_var0p01_e5",
+      "training_mode": "fresh",
+      "parent_trial": "full_es_only_reference",
+      "change_family": "bounded_diffusion_with_moments_from_initialization",
+      "hypothesis": "Bounded state-dependent diagonal diffusion and moment constraints from epoch one jointly separate conditional noise calibration from stationary amplitude control.",
+      "expected_observation": "The combined bounded model improves energy, mean, and covariance beyond both matched single-change arms without worsening PSD, innovations, or stability.",
+      "overrides": [
+        {"flag": "--diffusion-type", "tokens": ["bounded_state_diagonal"], "remove": false},
+        {"flag": "--diffusion-log-range", "tokens": [0.5], "remove": false},
+        {"flag": "--stationary-mean-weight", "tokens": [0.01], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": [0.01], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

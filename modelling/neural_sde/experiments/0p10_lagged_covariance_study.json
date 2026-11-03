@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_lagged_covariance",
+  "scientific_goal": "Determine whether direct transition autocovariance calibration of POD modes 1 through 3 improves the deficient temporal spectrum of the best amplitude-calibrated 0p10 Neural SDE without losing its accurate energy and POD covariance.",
+  "scientific_constraints": [
+    "Start every matched arm from runs/comparison/neural_sde_0p10_r20_velocity_endpoint_moments_h100_200_500_m30/best.pt; do not change architecture, data split, normalization, lag, full diffusion, structured SPSD drift, or the saved 5 percent trimming rule.",
+    "Tune and select only on validation repetitions 13 and 14; keep test repetitions 15 and 16 locked.",
+    "The lagged-covariance objective targets only shared-POD modes 1 through 3 and excludes the spatial mean.",
+    "Treat energy, per-mode amplitude, covariance, PSD, ACF, spatial-mean behavior, rollout survival, and one-step NLL as separate evidence.",
+    "The lagged-covariance auxiliary gradient is routed only to drift parameters. The ordinary one-step likelihood retains its normal joint gradients.",
+    "Run matched one-step, lagged-covariance-only, endpoint-moment-only, and combined arms before adaptive tuning.",
+    "After the matched arms, change one of lagged-covariance weight, moment weights, horizon set, or learning rate at a time. Do not add multistep likelihood in this study."
+  ],
+  "advisor_guidance": "The parent has excellent marginal amplitude on the current validation rollout: about 1.00 times untrimmed energy, 1.08 times POD covariance trace, and 0.156 relative POD covariance error. Its remaining weakness is temporal: the POD-only PSD error is about 0.526 decades, while spatial-mean variance is about 1.54 times reference. First determine whether direct normalized start-to-endpoint covariance matching at horizons 25, 50, 100, 150, and 200 improves POD-mode PSD and ACF without moving energy or covariance away from one. Prefer the smallest useful lagged-covariance weight. Do not interpret a lower auxiliary loss alone as success, and do not use the locked test split for selection.",
+  "budget": {
+    "max_training_trials": 7,
+    "max_confirmations": 2
+  },
+  "max_overrides_per_trial": 5,
+  "base_train_options": {
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0,
+    "--stationary-mean-weight": 0.01,
+    "--stationary-variance-weight": 0.0001,
+    "--stationary-lagged-covariance-weight": 0.01,
+    "--stationary-lagged-covariance-mode-count": 3,
+    "--stationary-lagged-covariance-epsilon": 1e-6,
+    "--stationary-mean-horizons": [25, 50, 100, 150, 200],
+    "--stationary-mean-trajectories": 30,
+    "--stationary-mean-batch-fraction": 0.05,
+    "--stationary-mean-validation-seed": 0,
+    "--learning-rate": 0.00005,
+    "--batch-size": 256,
+    "--epochs": 1,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--stationary-mean-weight": [[0], [0.005], [0.01]],
+    "--stationary-variance-weight": [[0], [0.00003], [0.0001], [0.0003]],
+    "--stationary-lagged-covariance-weight": [[0], [0.001], [0.003], [0.01], [0.03]],
+    "--stationary-lagged-covariance-mode-count": [[1], [2], [3], [5]],
+    "--stationary-mean-horizons": [[25, 50, 100], [25, 50, 100, 150, 200], [50, 100, 150, 200]],
+    "--stationary-mean-trajectories": [[30], [60]],
+    "--stationary-mean-batch-fraction": [[0.05], [0.1]],
+    "--learning-rate": [[0.00003], [0.00005], [0.0001]],
+    "--epochs": [[1], [2], [3]]
+  },
+  "screen": {
+    "horizon": 10000,
+    "conditions": 5,
+    "ensemble_size": 3,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "best_0p10_endpoint_moments_parent",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_endpoint_moments_h100_200_500_m30",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_endpoint_moments_h100_200_500_m30/rollout_50000",
+      "hypothesis": "The parent already matches marginal POD amplitude well but leaves substantial POD temporal-spectrum error for lagged covariance to target.",
+      "change_family": "seed_control"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "one_step_continuation",
+      "training_mode": "finetune",
+      "parent_trial": "best_0p10_endpoint_moments_parent",
+      "hypothesis": "An additional matched epoch of one-step likelihood alone does not specifically repair the POD temporal spectrum.",
+      "change_family": "one_step_control",
+      "expected_observation": "One-step NLL may improve, but POD-mode PSD and ACF remain close to the parent.",
+      "overrides": [
+        {"flag": "--stationary-mean-weight", "tokens": ["0"], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": ["0"], "remove": false},
+        {"flag": "--stationary-lagged-covariance-weight", "tokens": ["0"], "remove": false}
+      ]
+    },
+    {
+      "id": "lagged_covariance_only",
+      "training_mode": "finetune",
+      "parent_trial": "best_0p10_endpoint_moments_parent",
+      "hypothesis": "Direct mode-1-through-3 transition autocovariance matching corrects their decay and oscillation time scales more directly than another one-step continuation.",
+      "change_family": "lagged_covariance",
+      "expected_observation": "POD-mode PSD and ACF improve while energy and covariance remain acceptably close to the parent.",
+      "overrides": [
+        {"flag": "--stationary-mean-weight", "tokens": ["0"], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": ["0"], "remove": false}
+      ]
+    },
+    {
+      "id": "endpoint_moments_control",
+      "training_mode": "finetune",
+      "parent_trial": "best_0p10_endpoint_moments_parent",
+      "hypothesis": "Endpoint mean and variance matching at the new horizon grid preserves amplitude but does not directly fix temporal correlation.",
+      "change_family": "endpoint_moments",
+      "expected_observation": "Energy and covariance remain good, with less POD PSD or ACF improvement than the lagged-covariance arms.",
+      "overrides": [
+        {"flag": "--stationary-lagged-covariance-weight", "tokens": ["0"], "remove": false}
+      ]
+    },
+    {
+      "id": "lagged_covariance_plus_moments",
+      "training_mode": "finetune",
+      "parent_trial": "best_0p10_endpoint_moments_parent",
+      "hypothesis": "Combining a small lagged-covariance term with the established endpoint moments improves temporal structure while anchoring marginal amplitude.",
+      "change_family": "lagged_covariance_plus_moments",
+      "expected_observation": "This arm gives the best balance of POD PSD and ACF improvement with energy and covariance retained near reference.",
+      "overrides": []
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

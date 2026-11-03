@@ -14,6 +14,7 @@ from modelling.neural_sde.config import SDEConfig
 from modelling.neural_sde.losses import (EulerMaruyamaNLL,
                                          MonteCarloMultistepNLL,
                                          MonteCarloMultistepVelocityNLL,
+                                         MultistepVelocityEnergyScore,
                                          StationaryMeanLoss)
 from modelling.neural_sde.model import NeuralSDE
 from modelling.neural_sde.train import (compute_diffusion_validation_metric,
@@ -22,6 +23,10 @@ from modelling.neural_sde.train import (compute_diffusion_validation_metric,
                                        _epoch, _fit_sde_normalization,
                                        _fit_trimmed_sde_normalization,
                                        _globally_mixed_retained_velocity_batches,
+                                       _multistep_gradient_parameters,
+                                       _damping_residual_orthogonality,
+                                       _diagonal_linear_residual_orthogonality,
+                                       _restoring_residual_orthogonality,
                                        _sde_transition_batches,
                                        _trim_keep,
                                        compute_trimmed_increment_covariance,
@@ -220,6 +225,229 @@ def test_damped_residual_drift_is_positive_diagonal_plus_zero_initialized_residu
         SDEConfig(reduced_dim=2, dt=.02, drift_type="damped_residual")
 
 
+def test_damped_residual_can_omit_the_structured_damping_operator():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", stiffness_init=.2,
+        damping_init=.3, structured_damping=False)
+    model = NeuralSDE(config)
+    normalized = torch.tensor([[1., -2., 3., -4.]])
+
+    torch.testing.assert_close(
+        model.drift_model(normalized), torch.tensor([[-.2, .4]]))
+    torch.testing.assert_close(
+        model.drift_model.damping_matrix(), torch.zeros(2, 2))
+    assert model.drift_model.raw_damping is None
+    assert "drift_model.raw_damping" not in model.state_dict()
+    assert SDEConfig.from_dict(config.to_dict()) == config
+
+    model.drift_model(normalized).square().sum().backward()
+    assert model.drift_model.raw_stiffness.grad is not None
+    assert model.drift_model.network[-1].weight.grad is not None
+    assert all("damping" not in name for name, _ in model.named_parameters())
+
+    with pytest.raises(ValueError, match="requires damped_residual"):
+        SDEConfig(reduced_dim=2, dt=.02, structured_damping=False)
+
+
+def test_restoring_residual_orthogonality_is_diagonal_projection_energy():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", damped_operator="diagonal",
+        structured_damping=False)
+    model = NeuralSDE(config)
+    residual = torch.nn.Linear(4, 2, bias=False)
+    with torch.no_grad():
+        residual.weight.copy_(torch.tensor([[2., 0., 0., 0.],
+                                            [0., -3., 0., 0.]]))
+    model.drift_model.residual = residual
+    current = torch.tensor([[1., 2.], [3., -1.], [-2., 4.]])
+    history = current[:, None] - torch.tensor([[[.1, -.2]],
+                                                [[.3, .4]],
+                                                [[-.5, .6]]])
+    epsilon = 1e-6
+
+    loss, per_coordinate, coefficients = _restoring_residual_orthogonality(
+        model, current, history, epsilon)
+    position_second_moment = current.square().mean(dim=0)
+    cross_moment = torch.tensor([2., -3.]) * position_second_moment
+    expected = cross_moment.square() / (position_second_moment + epsilon)
+
+    torch.testing.assert_close(per_coordinate, expected)
+    torch.testing.assert_close(loss, expected.sum())
+    torch.testing.assert_close(
+        coefficients, cross_moment / (position_second_moment + epsilon))
+    loss.backward()
+    assert residual.weight.grad is not None
+
+
+def test_restoring_orthogonality_can_partial_out_linear_velocity():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", damped_operator="diagonal",
+        structured_damping=False)
+    model = NeuralSDE(config)
+    velocity = torch.tensor([
+        [-2., 1.], [-1., -2.], [0., 2.], [1., -1.], [2., 3.], [3., -3.]])
+    unexplained = torch.tensor([
+        [1., -1.], [-2., .5], [2., 1.5], [-1., -2.], [.5, 2.], [-.5, -1.]])
+    position = velocity @ torch.tensor([[.7, -.2], [.4, .6]]).T + unexplained
+    position_centered = position - position.mean(0)
+    velocity_centered = velocity - velocity.mean(0)
+    covariance = velocity_centered.T @ velocity_centered / len(velocity)
+    cross_covariance = position_centered.T @ velocity_centered / len(velocity)
+    matrix = cross_covariance @ torch.linalg.pinv(covariance, hermitian=True)
+    adjustment = {
+        "matrix": matrix,
+        "position_mean": position.mean(0),
+        "velocity_mean": velocity.mean(0),
+    }
+    adjusted_position = position_centered - velocity_centered @ matrix.T
+    torch.testing.assert_close(
+        adjusted_position.T @ velocity_centered / len(velocity),
+        torch.zeros(2, 2), atol=2e-6, rtol=0)
+
+    residual = torch.nn.Linear(4, 2, bias=False)
+    position_coefficients = torch.tensor([2., -3.])
+    with torch.no_grad():
+        residual.weight.copy_(torch.tensor([[2., 0., 4., -1.],
+                                            [0., -3., 2., 5.]]))
+    model.drift_model.residual = residual
+    history = (position - velocity)[:, None]
+    epsilon = 1e-6
+    loss, per_coordinate, coefficients = _restoring_residual_orthogonality(
+        model, position, history, epsilon, adjustment)
+    second_moment = adjusted_position.square().mean(0)
+    expected_coefficients = (
+        position_coefficients * second_moment / (second_moment + epsilon))
+    expected_per_coordinate = (
+        position_coefficients.square() * second_moment.square()
+        / (second_moment + epsilon))
+    torch.testing.assert_close(coefficients, expected_coefficients)
+    torch.testing.assert_close(per_coordinate, expected_per_coordinate)
+    torch.testing.assert_close(loss, expected_per_coordinate.sum())
+
+
+def test_damping_residual_orthogonality_is_diagonal_projection_energy():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", damped_operator="diagonal",
+        structured_damping=True)
+    model = NeuralSDE(config)
+    residual = torch.nn.Linear(4, 2, bias=False)
+    with torch.no_grad():
+        residual.weight.copy_(torch.tensor([[0., 0., 4., 0.],
+                                            [0., 0., 0., -5.]]))
+    model.drift_model.residual = residual
+    current = torch.tensor([[1., 2.], [3., -1.], [-2., 4.]])
+    velocity = torch.tensor([[.1, -.2], [.3, .4], [-.5, .6]])
+    history = current[:, None] - velocity[:, None]
+    epsilon = 1e-6
+
+    loss, per_coordinate, coefficients = _damping_residual_orthogonality(
+        model, current, history, epsilon)
+    velocity_second_moment = velocity.square().mean(dim=0)
+    cross_moment = torch.tensor([4., -5.]) * velocity_second_moment
+    expected = cross_moment.square() / (velocity_second_moment + epsilon)
+
+    torch.testing.assert_close(per_coordinate, expected)
+    torch.testing.assert_close(loss, expected.sum())
+    torch.testing.assert_close(
+        coefficients, cross_moment / (velocity_second_moment + epsilon))
+    loss.backward()
+    assert residual.weight.grad is not None
+
+
+def test_damping_orthogonality_can_partial_out_linear_position():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", damped_operator="diagonal",
+        structured_damping=True)
+    model = NeuralSDE(config)
+    position = torch.tensor([
+        [-2., 1.], [-1., -2.], [0., 2.], [1., -1.], [2., 3.], [3., -3.]])
+    unexplained = torch.tensor([
+        [1., -1.], [-2., .5], [2., 1.5], [-1., -2.], [.5, 2.], [-.5, -1.]])
+    velocity = position @ torch.tensor([[.7, -.2], [.4, .6]]).T + unexplained
+    position_centered = position - position.mean(0)
+    velocity_centered = velocity - velocity.mean(0)
+    position_covariance = position_centered.T @ position_centered / len(position)
+    cross_covariance = velocity_centered.T @ position_centered / len(position)
+    velocity_matrix = cross_covariance @ torch.linalg.pinv(
+        position_covariance, hermitian=True)
+    adjusted_velocity = velocity_centered - position_centered @ velocity_matrix.T
+    torch.testing.assert_close(
+        adjusted_velocity.T @ position_centered / len(position),
+        torch.zeros(2, 2), atol=2e-6, rtol=0)
+
+    residual = torch.nn.Linear(4, 2, bias=False)
+    velocity_coefficients = torch.tensor([4., -5.])
+    with torch.no_grad():
+        residual.weight.copy_(torch.tensor([[2., -1., 4., 0.],
+                                            [3., 5., 0., -5.]]))
+    model.drift_model.residual = residual
+    adjustment = {
+        "matrix": torch.zeros(2, 2),
+        "velocity_matrix": velocity_matrix,
+        "position_mean": position.mean(0),
+        "velocity_mean": velocity.mean(0),
+    }
+    history = (position - velocity)[:, None]
+    epsilon = 1e-6
+    loss, per_coordinate, coefficients = _damping_residual_orthogonality(
+        model, position, history, epsilon, adjustment)
+    second_moment = adjusted_velocity.square().mean(0)
+    expected_coefficients = (
+        velocity_coefficients * second_moment / (second_moment + epsilon))
+    expected_per_coordinate = (
+        velocity_coefficients.square() * second_moment.square()
+        / (second_moment + epsilon))
+    torch.testing.assert_close(coefficients, expected_coefficients)
+    torch.testing.assert_close(per_coordinate, expected_per_coordinate)
+    torch.testing.assert_close(loss, expected_per_coordinate.sum())
+
+
+def test_joint_diagonal_linear_orthogonality_is_centered_projection_energy():
+    config = SDEConfig(
+        reduced_dim=2, dt=.02, hidden_layers=(4,), state_variable="velocity",
+        history_steps=1, drift_type="damped_residual", damped_operator="diagonal",
+        structured_damping=True)
+    model = NeuralSDE(config)
+    position = torch.tensor([
+        [-2., 1.], [-1., -2.], [0., 2.], [1., -1.], [2., 3.], [3., -3.]])
+    velocity = torch.tensor([
+        [1., -1.], [-2., .5], [2., 1.5], [-1., -2.], [.5, 2.], [-.5, -1.]])
+    normalized_input = torch.cat((position, velocity), dim=-1)
+    expected_coefficients = torch.tensor([[2., 4.], [-3., 5.]])
+    residual = torch.stack((
+        2 * position[:, 0] + 4 * velocity[:, 0] + 11,
+        -3 * position[:, 1] + 5 * velocity[:, 1] - 7,
+    ), dim=-1).requires_grad_()
+    epsilon = 1e-6
+
+    loss, per_coordinate, coefficients = (
+        _diagonal_linear_residual_orthogonality(
+            model, position, None, epsilon,
+            normalized_input=normalized_input, residual=residual))
+
+    centered_input = torch.stack((position, velocity), dim=-1)
+    centered_input = centered_input - centered_input.mean(dim=0, keepdim=True)
+    centered_residual = residual - residual.mean(dim=0, keepdim=True)
+    covariance = torch.einsum("bdi,bdj->dij", centered_input, centered_input) / len(position)
+    moments = torch.einsum("bdi,bd->di", centered_input, centered_residual) / len(position)
+    expected_ridge_coefficients = torch.linalg.solve(
+        covariance + epsilon * torch.eye(2), moments.unsqueeze(-1)).squeeze(-1)
+    expected_per_coordinate = torch.sum(
+        moments * expected_ridge_coefficients, dim=-1)
+
+    torch.testing.assert_close(coefficients, expected_ridge_coefficients)
+    torch.testing.assert_close(coefficients, expected_coefficients, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(per_coordinate, expected_per_coordinate)
+    torch.testing.assert_close(loss, expected_per_coordinate.sum())
+    loss.backward()
+    assert residual.grad is not None
+
+
 def test_damped_residual_spsd_operators_are_symmetric_semidefinite_and_differentiable():
     config = SDEConfig(reduced_dim=2, dt=.02, hidden_layers=(4,),
                        state_variable="velocity", history_steps=1,
@@ -403,6 +631,182 @@ def test_sparse_history_offsets_select_taps_and_retain_complete_rollout_buffer()
                   state_variable="increment")
     with pytest.raises(ValueError, match="strictly increasing"):
         SDEConfig(reduced_dim=1, dt=.01, history_offsets=(1, 3, 3))
+
+
+def test_explicit_velocity_memory_is_diagonal_zero_initialized_and_causal():
+    config = SDEConfig(
+        reduced_dim=2, dt=.01, history_steps=1, state_variable="velocity",
+        velocity_memory_offsets=(1, 3), hidden_layers=(4,), diffusion_init=.1)
+    model = NeuralSDE(config)
+    model.drift_model.zero_output()
+    model.target_mean.copy_(torch.tensor([.1, -.2]))
+    model.target_std.copy_(torch.tensor([2., 4.]))
+    with torch.no_grad():
+        model.velocity_memory.copy_(torch.tensor([[.5, -.25], [1.5, .75]]))
+
+    assert config.history_steps == 4
+    assert config.effective_history_offsets == (1,)
+    assert config.velocity_memory_offsets == (1, 3)
+    assert model.drift_model.network[0].in_features == 4
+    assert SDEConfig.from_dict(config.to_dict()) == config
+
+    current = torch.tensor([[10., 20.]])
+    # a[t-1], ..., a[t-4], giving v[t-1]=[2,4] and v[t-3]=[1,8].
+    history = torch.tensor([[[9., 18.], [7., 14.], [6., 12.], [5., 4.]]])
+    normalized = torch.stack((
+        (history[:, 0] - history[:, 1] - model.target_mean) / model.target_std,
+        (history[:, 2] - history[:, 3] - model.target_mean) / model.target_std,
+    ), dim=1)
+    expected = model.target_std * (normalized * model.velocity_memory).sum(dim=1)
+    torch.testing.assert_close(model.drift(current, history), expected)
+
+    with pytest.raises(ValueError, match="native-lag"):
+        SDEConfig(reduced_dim=1, dt=.01, lag_steps=2, history_steps=1,
+                  state_variable="velocity", velocity_memory_offsets=(1,))
+
+
+def test_low_rank_velocity_memory_is_bounded_causal_and_roundtrips():
+    config = SDEConfig(
+        reduced_dim=3, dt=.01, history_steps=1, state_variable="velocity",
+        velocity_memory_offsets=(1, 3), velocity_memory_rank=2,
+        velocity_memory_norm_cap=.4, hidden_layers=(4,), diffusion_init=.1)
+    model = NeuralSDE(config)
+    model.drift_model.zero_output()
+    current = torch.tensor([[10., 20., 30.]])
+    history = torch.tensor([[[9., 18., 27.], [7., 14., 21.],
+                             [6., 12., 18.], [5., 10., 15.]]])
+
+    # The expanded model is exactly its memory-free parent at initialization.
+    torch.testing.assert_close(model.drift(current, history), torch.zeros_like(current))
+    assert model.velocity_memory_left.shape == (3, 2)
+    assert model.velocity_memory_right.shape == (3, 2)
+    assert model.velocity_memory_coefficients.shape == (2, 2)
+    with torch.no_grad():
+        model.velocity_memory_coefficients.copy_(torch.tensor([[.5, -.2], [.1, .3]]))
+    past = torch.stack((history[:, 0] - history[:, 1],
+                        history[:, 2] - history[:, 3]), dim=1)
+    left = model._bounded_memory_factor(model.velocity_memory_left)
+    right = model._bounded_memory_factor(model.velocity_memory_right)
+    coefficients = .4 * torch.tanh(model.velocity_memory_coefficients)
+    expected = torch.einsum(
+        "...kr,kr,dr->...d", torch.einsum("...kd,dr->...kr", past, right),
+        coefficients, left)
+    torch.testing.assert_close(model.drift(current, history), expected)
+    assert max(model.velocity_memory_kernel_norms()) <= .4 + 1e-6
+
+    parameters = set_trainable_components(model, "memory")
+    assert set(parameters) == set(model.velocity_memory_parameters())
+    assert all(not parameter.requires_grad for parameter in model.drift_model.parameters())
+    assert all(not parameter.requires_grad for parameter in model.diffusion_model.parameters())
+
+    restored = NeuralSDE(SDEConfig.from_dict(config.to_dict()))
+    restored.load_state_dict(model.state_dict())
+    generated = model.rollout(current, history_states=history, horizon=3,
+                              num_trajectories=2, seed=7)
+    torch.testing.assert_close(
+        generated, restored.rollout(current, history_states=history, horizon=3,
+                                    num_trajectories=2, seed=7))
+
+    with pytest.raises(ValueError, match="requires velocity_memory_offsets"):
+        SDEConfig(reduced_dim=3, dt=.01, velocity_memory_rank=2)
+    with pytest.raises(ValueError, match="between 1 and reduced_dim"):
+        SDEConfig(reduced_dim=3, dt=.01, history_steps=1, state_variable="velocity",
+                  velocity_memory_offsets=(1,), velocity_memory_rank=4)
+
+
+def test_stable_velocity_oscillator_reconstructs_recurrence_and_rolls_out():
+    config = SDEConfig(
+        reduced_dim=6, dt=.01, history_steps=1, history_offsets=(1,),
+        state_variable="velocity", velocity_oscillator_periods=(4., 8.),
+        velocity_oscillator_burnin=3, velocity_oscillator_radius_init=.9,
+        velocity_oscillator_norm_cap=.2, hidden_layers=(4,), diffusion_init=.1)
+    model = NeuralSDE(config)
+    model.drift_model.zero_output()
+    current = torch.tensor([[4., 2., 1., 3., 5., 7.]])
+    history = torch.tensor([[[3., 2., 0., 3., 4., 6.],
+                             [1., 1., 0., 2., 4., 4.],
+                             [0., 1., -1., 1., 2., 3.]]])
+
+    # The vectorized observed burn-in must equal the actual recurrent update.
+    positions = torch.cat((history.flip(-2), current.unsqueeze(-2)), dim=-2)
+    velocities = positions[..., 1:, :] - positions[..., :-1, :]
+    recurrent = current.new_zeros((1, 4))
+    for velocity in velocities.unbind(dim=-2):
+        recurrent = model.advance_velocity_oscillator(recurrent, velocity)
+    reconstructed = model.velocity_oscillator_state(current, history)
+    torch.testing.assert_close(reconstructed, recurrent)
+
+    # Zero output coupling preserves the memory-free parent exactly.
+    torch.testing.assert_close(model.drift(current, history), torch.zeros_like(current))
+    assert config.history_steps == 3
+    assert config.effective_history_offsets == (1,)
+    assert torch.all(model.velocity_oscillator_radius() < 1)
+    assert SDEConfig.from_dict(config.to_dict()) == config
+
+    parameters = set_trainable_components(model, "memory")
+    assert set(parameters) == set(model.velocity_oscillator_parameters())
+    assert all(not parameter.requires_grad for parameter in model.drift_model.parameters())
+    assert all(not parameter.requires_grad for parameter in model.diffusion_model.parameters())
+    with torch.no_grad():
+        model.velocity_oscillator_coefficients.fill_(.2)
+    assert torch.linalg.vector_norm(model.drift(current, history)) > 0
+
+    restored = NeuralSDE(SDEConfig.from_dict(config.to_dict()))
+    restored.load_state_dict(model.state_dict())
+    generated = model.rollout(current, history_states=history, horizon=5,
+                              num_trajectories=2, seed=7)
+    torch.testing.assert_close(
+        generated, restored.rollout(current, history_states=history, horizon=5,
+                                    num_trajectories=2, seed=7))
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SDEConfig(reduced_dim=6, dt=.01, history_steps=1, state_variable="velocity",
+                  velocity_memory_offsets=(1,), velocity_oscillator_periods=(8.,))
+
+
+def test_autoregressive_innovation_memory_is_parent_exact_causal_and_bounded():
+    config = SDEConfig(
+        reduced_dim=3, dt=.01, state_variable="velocity", history_offsets=(1,),
+        velocity_innovation_offsets=(1, 2, 5), velocity_innovation_rank=2,
+        velocity_innovation_norm_cap=.8, hidden_layers=(4,), diffusion_init=.1)
+    model = NeuralSDE(config)
+    assert config.history_steps == 6
+    current = torch.randn(7, 3)
+    history = torch.randn(7, config.history_steps, 3)
+    velocity = model._frame_velocity(current, history)
+    base_mean, base_factor = model.velocity_base_step_distribution(
+        current, history, velocity)
+    mean, factor = model.velocity_step_distribution(current, history, velocity)
+    torch.testing.assert_close(mean, base_mean, rtol=0, atol=0)
+    torch.testing.assert_close(factor, base_factor, rtol=0, atol=0)
+
+    innovations = model.velocity_innovation_state(current, history)
+    assert innovations.shape == (7, 5, 3)
+    with torch.no_grad():
+        model.velocity_innovation_coefficients.copy_(
+            torch.tensor([[.4, -.2], [.1, .3], [-.2, .1]]))
+    expected = base_mean + model.target_std * model.velocity_innovation_correction(
+        innovations)
+    mean, _ = model.velocity_step_distribution(current, history, velocity)
+    torch.testing.assert_close(mean, expected)
+    assert sum(model.velocity_innovation_kernel_norms()) <= .8 + 1e-6
+
+    following = torch.randn_like(current)
+    loss = EulerMaruyamaNLL()(model, current, following, history_states=history)
+    loss.backward()
+    assert torch.isfinite(model.velocity_innovation_coefficients.grad).all()
+    rollout = model.rollout(
+        current[:2], horizon=3, num_trajectories=2,
+        history_states=history[:2], seed=4)
+    assert rollout.shape == (2, 2, 4, 3)
+    assert torch.isfinite(rollout).all()
+
+    with pytest.raises(ValueError, match="requires velocity_innovation_offsets"):
+        SDEConfig(reduced_dim=3, dt=.01, velocity_innovation_rank=2)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        SDEConfig(reduced_dim=3, dt=.01, state_variable="velocity", history_steps=1,
+                  velocity_memory_offsets=(1,), velocity_innovation_offsets=(1,),
+                  velocity_innovation_rank=2)
 
 
 def test_increment_state_likelihood_and_rollout_evolve_consecutive_increments():
@@ -653,6 +1057,130 @@ def test_multistep_particle_schedule_prunes_hot_loop_after_horizons():
         MonteCarloMultistepNLL((2, 4), particle_counts=(3, 4))
 
 
+def test_velocity_energy_score_uses_standardized_distinct_pairs():
+    model = NeuralSDE(SDEConfig(2, .01, history_steps=1,
+                                state_variable="velocity", hidden_layers=(4,)))
+    model.target_std.copy_(torch.tensor([2., 4.]))
+    objective = MultistepVelocityEnergyScore((1,), particles=3)
+    samples = torch.tensor([[[2., 4.], [0., 0.], [-2., -4.]]])
+    target = torch.tensor([[2., 0.]])
+
+    observation = (torch.tensor(1.) + torch.tensor(1.) + torch.sqrt(torch.tensor(5.))) / 3
+    pair_term = 2 * torch.sqrt(torch.tensor(2.)) / 3
+    torch.testing.assert_close(
+        objective._score_samples(model, 1, samples, target),
+        observation - pair_term)
+
+    with pytest.raises(ValueError, match="at least two"):
+        MultistepVelocityEnergyScore((2,), particles=1)
+    with pytest.raises(ValueError, match="at least two"):
+        MultistepVelocityEnergyScore(
+            (2, 4), particles=3, particle_counts=(3, 1))
+
+
+def test_joint_energy_score_uses_both_scaled_blocks_and_horizon_weights():
+    model = NeuralSDE(SDEConfig(2, .01, history_steps=1,
+                                state_variable="velocity", hidden_layers=(4,)))
+    model.state_std.copy_(torch.tensor([2., 4.]))
+    model.target_std.copy_(torch.tensor([1., 2.]))
+    objective = MultistepVelocityEnergyScore(
+        (2, 4), particles=3, target="joint", position_weight=4.,
+        velocity_weight=1., horizon_weights=(1., 3.))
+    samples = torch.tensor([[[2., 4., 1., 2.],
+                             [0., 0., 0., 0.],
+                             [-2., -4., -1., -2.]]])
+    target = torch.tensor([[2., 0., 1., 0.]])
+    transformed_samples = torch.cat((
+        2 * samples[..., :2] / model.state_std,
+        samples[..., 2:] / model.target_std), dim=-1)
+    transformed_target = torch.cat((
+        2 * target[..., :2] / model.state_std,
+        target[..., 2:] / model.target_std), dim=-1)
+    observation = torch.linalg.vector_norm(
+        transformed_samples - transformed_target[:, None], dim=-1).mean()
+    first, second = torch.triu_indices(3, 3, offset=1)
+    pair_term = torch.linalg.vector_norm(
+        transformed_samples[:, first] - transformed_samples[:, second], dim=-1
+    ).sum() / (3 * 2)
+    torch.testing.assert_close(
+        objective._score_samples(model, 2, samples, target), observation - pair_term)
+    torch.testing.assert_close(
+        objective.aggregate({2: torch.tensor(2.), 4: torch.tensor(6.)}),
+        torch.tensor(5.))
+    assert objective.horizon_weights == (.25, .75)
+
+    with pytest.raises(ValueError, match="one nonnegative"):
+        MultistepVelocityEnergyScore(
+            (2, 4), particles=3, target="joint", horizon_weights=(1.,))
+    with pytest.raises(ValueError, match="positive and finite"):
+        MultistepVelocityEnergyScore(
+            (2,), particles=3, target="joint", position_weight=0.)
+
+
+def test_velocity_energy_score_is_reproducible_and_differentiable():
+    model = NeuralSDE(SDEConfig(2, .01, history_steps=1,
+                                state_variable="velocity", hidden_layers=(4,),
+                                diffusion_init=.2))
+    current = torch.tensor([[.4, -.2], [.7, .1], [-.3, .5]])
+    history = current[:, None, :] - torch.tensor([.1, -.05])
+    targets = torch.tensor([
+        [[.12, -.03], [.08, .02]],
+        [[.09, -.01], [.04, .05]],
+        [[.11, -.04], [.07, .01]],
+    ])
+    objective = MultistepVelocityEnergyScore(
+        (2, 4), particles=5, particle_counts=(5, 3))
+    first = objective(
+        model, current, targets, history_states=history,
+        generator=torch.Generator().manual_seed(41))
+    second = objective(
+        model, current, targets, history_states=history,
+        generator=torch.Generator().manual_seed(41))
+    torch.testing.assert_close(first, second)
+    assert torch.isfinite(first)
+
+    first.backward()
+    assert any(parameter.grad is not None and torch.any(parameter.grad != 0)
+               for parameter in model.drift_model.parameters())
+    assert any(parameter.grad is not None and torch.any(parameter.grad != 0)
+               for parameter in model.diffusion_model.parameters())
+
+
+def test_joint_energy_score_rollout_is_reproducible_and_differentiable():
+    model = NeuralSDE(SDEConfig(2, .01, history_steps=1,
+                                state_variable="velocity", hidden_layers=(4,),
+                                diffusion_init=.2))
+    current = torch.tensor([[.4, -.2], [.7, .1], [-.3, .5]])
+    history = current[:, None, :] - torch.tensor([.1, -.05])
+    velocities = torch.tensor([
+        [[.12, -.03], [.08, .02]],
+        [[.09, -.01], [.04, .05]],
+        [[.11, -.04], [.07, .01]],
+    ])
+    displacements = torch.tensor([
+        [[.2, -.1], [.3, -.05]],
+        [[.1, .05], [.2, .1]],
+        [[-.1, .2], [-.2, .3]],
+    ])
+    targets = torch.cat((displacements, velocities), dim=-1)
+    objective = MultistepVelocityEnergyScore(
+        (2, 4), particles=5, particle_counts=(5, 3), target="joint",
+        position_weight=2., velocity_weight=1.)
+    first = objective(
+        model, current, targets, history_states=history,
+        generator=torch.Generator().manual_seed(41))
+    second = objective(
+        model, current, targets, history_states=history,
+        generator=torch.Generator().manual_seed(41))
+    torch.testing.assert_close(first, second)
+    assert torch.isfinite(first)
+    first.backward()
+    assert any(parameter.grad is not None and torch.any(parameter.grad != 0)
+               for parameter in model.drift_model.parameters())
+    assert any(parameter.grad is not None and torch.any(parameter.grad != 0)
+               for parameter in model.diffusion_model.parameters())
+
+
 def test_repeated_particle_schedule_preserves_scalar_behavior():
     model = NeuralSDE(SDEConfig(2, .01, history_steps=1,
                                 state_variable="velocity", hidden_layers=(4,)))
@@ -784,6 +1312,30 @@ def test_multistep_validation_noise_is_reproducible(shared_data, target):
     assert first == second
 
 
+def test_multistep_horizon_does_not_change_trimmed_one_step_population(shared_data):
+    config = SDEConfig(shared_data.n_coordinates, dt=shared_data.native_dt,
+                       history_steps=1, state_variable="velocity", hidden_layers=(4,))
+    model = NeuralSDE(config)
+    model.set_normalization(_fit_sde_normalization(shared_data, config))
+    trim_scale = model.state_std.detach().clone()
+    cutoff, _ = compute_training_trim_cutoff(shared_data, model, 5., 7)
+    baseline = {}
+    _epoch(model, shared_data, "validation", 7, "cpu", EulerMaruyamaNLL(),
+           train_trim_cutoff=cutoff, train_trim_state_std=trim_scale,
+           metric_output=baseline)
+
+    for horizons in ((2,), (2, 4)):
+        metrics = {}
+        _epoch(model, shared_data, "validation", 7, "cpu", EulerMaruyamaNLL(),
+               train_trim_cutoff=cutoff, train_trim_state_std=trim_scale,
+               multistep_objective=MonteCarloMultistepNLL(horizons, particles=2),
+               multistep_weight=.1, multistep_noise_seed=13,
+               multistep_window_seed=17, metric_output=metrics)
+        assert metrics["window_count"] == baseline["window_count"]
+        assert metrics["one_step_nll"] == pytest.approx(baseline["one_step_nll"])
+        assert metrics["multistep_window_count"] > 0
+
+
 def test_stationary_mean_loss_crosses_independent_endpoint_means():
     config = SDEConfig(2, dt=.01, history_steps=1, state_variable="velocity",
                        hidden_layers=(4,))
@@ -824,6 +1376,107 @@ def test_stationary_mean_loss_crosses_independent_endpoint_means():
                for parameter in model.drift_model.parameters())
 
 
+def test_stationary_variance_selects_spatial_mean_and_leading_pod_modes():
+    config = SDEConfig(3, dt=.01, history_steps=1, state_variable="velocity",
+                       hidden_layers=(4,))
+    model = NeuralSDE(config)
+    current = torch.tensor([[2., 4., 1.], [4., -4., 3.], [1., 2., -2.]])
+    history = current.unsqueeze(1).clone()
+    endpoint = current + torch.tensor([[.2, -.5, .7], [.1, -.2, -.4], [-.1, .3, .2]])
+    seed = 43
+    legacy = StationaryMeanLoss(horizon=1, pod_coordinate_offset=1)
+    selected = StationaryMeanLoss(
+        horizon=1, pod_coordinate_offset=1, variance_pod_mode_count=1)
+    legacy_stats = legacy.statistics(
+        model, current, endpoint, history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    selected_stats = selected.statistics(
+        model, current, endpoint, history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    torch.testing.assert_close(selected_stats[0], legacy_stats[0])
+    torch.testing.assert_close(selected_stats[1], legacy_stats[1])
+    torch.testing.assert_close(selected_stats[3], legacy_stats[3])
+    errors = selected_stats[3]
+    expected = selected_stats[2]
+
+    # Reconstruct the branch-specific errors to check the selected reduction;
+    # the reported error remains the full-coordinate branch mean.
+    state = current[:, None, :].expand(-1, 2, -1)
+    expanded_history = history[:, None].expand(-1, 2, -1, -1)
+    velocity = model._frame_velocity(state, expanded_history)
+    mean, factor = model.velocity_step_distribution(state, expanded_history, velocity)
+    noise = torch.randn(velocity.shape, generator=torch.Generator().manual_seed(seed))
+    generated = state + mean + torch.matmul(noise, factor.T)
+    branch_errors = (generated.var(dim=0, correction=1)
+                     - endpoint.var(dim=0, correction=1))
+    torch.testing.assert_close(errors, branch_errors.mean(dim=0))
+    torch.testing.assert_close(
+        expected, branch_errors[0, :2].mul(branch_errors[1, :2]).mean())
+    assert selected.selected_variance_error(errors).shape == (2,)
+
+
+def test_stationary_variance_selection_without_spatial_mean():
+    objective = StationaryMeanLoss(
+        horizon=1, pod_coordinate_offset=0, variance_pod_mode_count=2)
+    error = torch.tensor([1., 2., 3.])
+    torch.testing.assert_close(
+        objective.selected_variance_error(error), torch.tensor([1., 2.]))
+    with pytest.raises(ValueError, match="at least one coordinate"):
+        StationaryMeanLoss(
+            horizon=1, pod_coordinate_offset=0,
+            variance_pod_mode_count=0).selected_variance_error(error)
+    with pytest.raises(ValueError, match="nonnegative"):
+        StationaryMeanLoss(horizon=1, variance_pod_mode_count=-1)
+    with pytest.raises(ValueError, match="cannot exceed"):
+        StationaryMeanLoss(
+            horizon=1, pod_coordinate_offset=0,
+            variance_pod_mode_count=4).selected_variance_error(error)
+
+
+def test_stationary_lagged_covariance_matches_selected_pod_mode():
+    config = SDEConfig(2, dt=.01, history_steps=1, state_variable="velocity",
+                       hidden_layers=(4,))
+    model = NeuralSDE(config)
+    model.state_std.copy_(torch.tensor([2., 4.]))
+    current = torch.tensor([[2., 4.], [4., -4.], [1., 2.]])
+    history = current.unsqueeze(1).clone()
+    data_endpoint = torch.tensor([[2.2, 3.5], [4.1, -4.2], [.8, 2.4]])
+    objective = StationaryMeanLoss(
+        horizon=1, pod_coordinate_offset=1,
+        lagged_covariance_mode_count=1, lagged_covariance_epsilon=1e-6)
+    seed = 41
+    statistics = objective.per_horizon_statistics_with_lagged_covariance(
+        model, current, data_endpoint, history_states=history,
+        generator=torch.Generator().manual_seed(seed))[1]
+    lagged_loss, lagged_error = statistics[4:]
+
+    state = current[:, None, :].expand(-1, 2, -1)
+    expanded_history = history[:, None].expand(-1, 2, -1, -1)
+    velocity = model._frame_velocity(state, expanded_history)
+    mean, factor = model.velocity_step_distribution(state, expanded_history, velocity)
+    noise = torch.randn(velocity.shape, generator=torch.Generator().manual_seed(seed))
+    endpoint = state + mean + torch.matmul(noise, factor.T)
+    normalized_current = current[:, 1] / model.state_std[1]
+    normalized_endpoint = endpoint[..., 1] / model.state_std[1]
+    normalized_data = data_endpoint[:, 1] / model.state_std[1]
+    centered_current = normalized_current - normalized_current.mean()
+    centered_endpoint = normalized_endpoint - normalized_endpoint.mean(dim=0)
+    centered_data = normalized_data - normalized_data.mean()
+    start_variance = centered_current.square().sum() / (len(current) - 1)
+    generated_covariance = (
+        centered_current[:, None].mul(centered_endpoint).sum(dim=0)
+        / (len(current) - 1))
+    data_covariance = centered_current.mul(centered_data).sum() / (len(current) - 1)
+    expected_errors = (
+        (generated_covariance - data_covariance) / (start_variance + 1e-6))
+
+    torch.testing.assert_close(lagged_error, expected_errors.mean().reshape(1))
+    torch.testing.assert_close(lagged_loss, expected_errors[0] * expected_errors[1])
+    lagged_loss.backward()
+    assert any(parameter.grad is not None
+               for parameter in model.drift_model.parameters())
+
+
 def test_stationary_mean_sampler_mixes_source_blocks(monkeypatch):
     blocks = [
         {"current_state": torch.full((4, 2), float(index)),
@@ -846,6 +1499,37 @@ def test_stationary_mean_sampler_mixes_source_blocks(monkeypatch):
     torch.testing.assert_close(
         ensembles[0]["data_endpoint"][:, 0], torch.tensor([10., 11., 12.]))
     assert len(ensembles) == 1
+
+
+def test_stationary_mean_reuses_paths_at_multiple_horizons():
+    config = SDEConfig(2, dt=1., history_steps=1, state_variable="velocity",
+                       hidden_layers=(4,))
+    model = NeuralSDE(config)
+    model.state_std.copy_(torch.tensor([2., 4.]))
+    current = torch.tensor([[2., 4.], [4., -4.], [1., 2.]])
+    history = current.unsqueeze(1).clone()
+    endpoints = torch.stack((current + .1, current - .2), dim=1)
+    seed = 37
+    objective = StationaryMeanLoss(horizon=(1, 3))
+    per_horizon = objective.per_horizon_statistics(
+        model, current, endpoints, history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    first = StationaryMeanLoss(horizon=1).statistics(
+        model, current, endpoints[:, 0], history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    third = StationaryMeanLoss(horizon=3).statistics(
+        model, current, endpoints[:, 1], history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    for actual, expected in zip(per_horizon[1], first):
+        torch.testing.assert_close(actual, expected)
+    for actual, expected in zip(per_horizon[3], third):
+        torch.testing.assert_close(actual, expected)
+    aggregate = objective.statistics(
+        model, current, endpoints, history_states=history,
+        generator=torch.Generator().manual_seed(seed))
+    for index, actual in enumerate(aggregate):
+        expected = torch.stack((per_horizon[1][index], per_horizon[3][index])).mean(0)
+        torch.testing.assert_close(actual, expected)
 
 
 def test_stationary_mean_epoch_sampling_is_reproducible(shared_data):
@@ -926,6 +1610,42 @@ def test_stationary_variance_epoch_adds_diffusion_gradients(shared_data):
     assert len(metrics["stationary_variance_normalized_error"]) == shared_data.n_coordinates
 
 
+def test_stationary_lagged_covariance_epoch_adds_gradients_only_to_drift(shared_data):
+    config = SDEConfig(shared_data.n_coordinates, dt=shared_data.native_dt,
+                       history_steps=1, state_variable="velocity", hidden_layers=(4,),
+                       diffusion_type="bounded_state_diagonal", diffusion_log_range=.5)
+    model = NeuralSDE(config)
+    model.set_normalization(_fit_sde_normalization(shared_data, config))
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    diffusion_before = {
+        name: value.detach().clone() for name, value in model.diffusion_model.state_dict().items()
+    }
+    drift_before = {
+        name: value.detach().clone() for name, value in model.drift_model.state_dict().items()
+    }
+
+    class ZeroObjective(torch.nn.Module):
+        def forward(self, model, current, following, **options):
+            return sum(parameter.sum() * 0 for parameter in model.parameters())
+
+    metrics = {}
+    _epoch(
+        model, shared_data, "train", 7, "cpu", ZeroObjective(), optimizer,
+        stationary_mean_objective=StationaryMeanLoss(
+            horizon=2, pod_coordinate_offset=int(shared_data.include_spatial_mean),
+            lagged_covariance_mode_count=1),
+        stationary_lagged_covariance_weight=.2,
+        stationary_mean_trajectories=3, stationary_mean_batch_fraction=1,
+        stationary_mean_noise_seed=11, stationary_mean_window_seed=13,
+        metric_output=metrics)
+    assert any(not torch.equal(value, drift_before[name])
+               for name, value in model.drift_model.state_dict().items())
+    for name, value in model.diffusion_model.state_dict().items():
+        torch.testing.assert_close(value, diffusion_before[name], rtol=0, atol=0)
+    assert "stationary_lagged_covariance_loss" in metrics
+    assert len(metrics["stationary_lagged_covariance_normalized_error"]) == 1
+
+
 def test_multistep_window_fraction_subsamples_only_multistep_examples(shared_data):
     config = SDEConfig(shared_data.n_coordinates, dt=shared_data.native_dt,
                        history_steps=1, state_variable="velocity", hidden_layers=(4,))
@@ -962,6 +1682,49 @@ def test_multistep_window_fraction_subsamples_only_multistep_examples(shared_dat
     assert batch_metrics["multistep_window_count"] == sum(map(len, selections))
 
 
+def test_multistep_gradient_groups_route_only_the_auxiliary_gradient(shared_data):
+    config = SDEConfig(
+        shared_data.n_coordinates, dt=shared_data.native_dt,
+        history_steps=1, state_variable="velocity", hidden_layers=(4,),
+        drift_type="damped_residual", diffusion_type="bounded_state_diagonal",
+        diffusion_log_range=.5)
+
+    class ZeroObjective(torch.nn.Module):
+        def forward(self, model, current, following, **options):
+            return sum(parameter.sum() * 0 for parameter in model.parameters())
+
+    def updated_names(groups=None):
+        model = NeuralSDE(config)
+        model.set_normalization(_fit_sde_normalization(shared_data, config))
+        before = {
+            name: parameter.detach().clone()
+            for name, parameter in model.named_parameters()
+        }
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+        options = {} if groups is None else {"multistep_gradient_groups": groups}
+        _epoch(
+            model, shared_data, "train", 7, "cpu", ZeroObjective(), optimizer,
+            multistep_objective=MonteCarloMultistepNLL((2,), particles=2),
+            multistep_weight=.1, multistep_noise_seed=13, **options)
+        return {
+            name for name, parameter in model.named_parameters()
+            if not torch.equal(parameter, before[name])
+        }
+
+    # The default sends MC gradients to drift but not diffusion.
+    default_updates = updated_names()
+    assert default_updates
+    assert all(name.startswith("drift_model.") for name in default_updates)
+
+    stiffness_updates = updated_names(("stiffness",))
+    assert stiffness_updates == {"drift_model.raw_stiffness"}
+
+    model = NeuralSDE(config)
+    _, structured_names = _multistep_gradient_parameters(model, ("structured",))
+    assert set(structured_names) == {
+        "drift_model.raw_stiffness", "drift_model.raw_damping"}
+
+
 def test_capped_multistep_windows_do_not_depend_on_scoring_batch_size(shared_data):
     config = SDEConfig(shared_data.n_coordinates, dt=shared_data.native_dt,
                        history_steps=1, state_variable="velocity", hidden_layers=(4,))
@@ -993,8 +1756,13 @@ def test_multistep_cli_logs_separate_horizons_and_checkpoint_options(shared_data
     assert training["multistep_horizons"] == [2, 4]
     assert training["multistep_particles"] == 5
     assert training["multistep_validation_seed"] == 19
+    assert training["multistep_gradient_groups"] == ["drift"]
+    assert training["multistep_gradient_parameter_names"]
+    assert not any(name.startswith("diffusion_model.") for name in
+                   training["multistep_gradient_parameter_names"])
     record = json.loads((output / "metrics.jsonl").read_text())
     assert record["multistep_target"] == target
+    assert record["multistep_gradient_groups"] == ["drift"]
     assert record["validation_multistep_windows_scored"] > 0
     for key in ("train_nll", "validation_nll", "train_total_loss",
                 "validation_total_loss", "train_multistep_nll_h2",
@@ -1083,6 +1851,42 @@ def test_multistep_mode_counts_cli_are_saved_and_inherited(shared_data, tmp_path
     assert likelihood["coordinate_selection"].startswith("first N shared-POD modes")
 
 
+def test_energy_score_cli_saves_objective_and_metrics(shared_data, tmp_path):
+    output = tmp_path / "joint_energy_score"
+    main(["train", "--experiment", shared_data.experiment,
+          "--rank", str(shared_data.rank),
+          "--data-root", shared_data.source_config["data_root"],
+          "--state-variable", "velocity", "--lag", "1", "--hidden-layers", "4",
+          "--multistep-weight", ".1", "--multistep-objective", "energy_score",
+          "--multistep-target", "joint",
+          "--multistep-horizons", "2", "4", "--multistep-particles", "3",
+          "--multistep-horizon-weights", "1", "3",
+          "--multistep-position-weight", "2",
+          "--multistep-velocity-weight", "1",
+          "--multistep-gradient-groups", "drift", "diffusion",
+          "--epochs", "1", "--batch-size", "7", "--device", "cpu",
+          "--output", str(output)])
+    _, checkpoint = load_model(output / "best.pt")
+    training = checkpoint["training"]
+    assert training["multistep_objective"] == "energy_score"
+    assert training["multistep_target"] == "joint"
+    assert training["multistep_horizon_weights"] == [.25, .75]
+    assert training["multistep_position_weight"] == 2
+    assert training["multistep_velocity_weight"] == 1
+    assert training["multistep_particle_counts"] == [3, 3]
+    assert training["multistep_gradient_groups"] == ["drift", "diffusion"]
+
+    record = json.loads((output / "metrics.jsonl").read_text())
+    assert record["multistep_objective"] == "energy_score"
+    assert record["multistep_target"] == "joint"
+    assert record["multistep_horizon_weights"] == [.25, .75]
+    for key in ("train_multistep_energy_score_h2",
+                "train_multistep_energy_score_h4",
+                "validation_multistep_energy_score_h2",
+                "validation_multistep_energy_score_h4"):
+        assert math.isfinite(record[key])
+
+
 def test_stationary_mean_cli_is_saved_and_logged(shared_data, tmp_path):
     output = tmp_path / "velocity_stationary_mean"
     main(["train", "--experiment", shared_data.experiment,
@@ -1092,7 +1896,10 @@ def test_stationary_mean_cli_is_saved_and_logged(shared_data, tmp_path):
           "--hidden-layers", "4", "--train-trim-percent", "5",
           "--stationary-mean-weight", ".03",
           "--stationary-variance-weight", ".04",
-          "--stationary-mean-horizon", "2",
+          "--stationary-variance-pod-mode-count", "1",
+          "--stationary-lagged-covariance-weight", ".05",
+          "--stationary-lagged-covariance-mode-count", "1",
+          "--stationary-mean-horizons", "1", "2",
           "--stationary-mean-trajectories", "2",
           "--stationary-mean-batch-fraction", "1",
           "--stationary-mean-validation-seed", "17",
@@ -1102,23 +1909,41 @@ def test_stationary_mean_cli_is_saved_and_logged(shared_data, tmp_path):
     training = checkpoint["training"]
     assert training["stationary_mean_weight"] == .03
     assert training["stationary_variance_weight"] == .04
+    assert training["stationary_variance_pod_mode_count"] == 1
+    assert training["stationary_variance_coordinates"] == ["spatial_mean", "POD 1"]
+    assert training["stationary_lagged_covariance_weight"] == .05
+    assert training["stationary_lagged_covariance_mode_count"] == 1
     assert training["stationary_mean_horizon"] == 2
+    assert training["stationary_mean_horizons"] == [1, 2]
     assert training["stationary_mean_trajectories"] == 2
     assert training["stationary_mean_batch_fraction"] == 1
     assert training["stationary_mean_validation_seed"] == 17
-    assert training["stationary_mean_gradient_parameters"].startswith("mean: drift only")
+    assert training["stationary_mean_gradient_parameters"].startswith(
+        "mean and lagged covariance: drift only")
     assert training["stationary_mean_generated_paths_per_start"] == 2
     assert "generated-minus-measured endpoint mean" in training[
         "stationary_mean_definition"]
     record = json.loads((output / "metrics.jsonl").read_text())
     assert record["stationary_mean_weight"] == .03
     assert record["stationary_variance_weight"] == .04
+    assert record["stationary_variance_pod_mode_count"] == 1
+    assert record["stationary_lagged_covariance_weight"] == .05
+    assert record["stationary_lagged_covariance_mode_count"] == 1
     assert record["stationary_mean_horizon"] == 2
+    assert record["stationary_mean_horizons"] == [1, 2]
     assert record["train_stationary_mean_trajectory_count"] > 0
     assert record["validation_stationary_mean_trajectory_count"] > 0
     assert len(record["validation_stationary_mean_normalized_error"]) == shared_data.n_coordinates
     assert "validation_stationary_mean_weighted_contribution" in record
     assert "validation_stationary_variance_weighted_contribution" in record
+    assert "validation_stationary_variance_selected_normalized_error_rmse" in record
+    assert "validation_stationary_mean_loss_h1" in record
+    assert "validation_stationary_mean_loss_h2" in record
+    assert "validation_stationary_variance_loss_h1" in record
+    assert "validation_stationary_variance_loss_h2" in record
+    assert "validation_stationary_lagged_covariance_loss_h1" in record
+    assert "validation_stationary_lagged_covariance_loss_h2" in record
+    assert len(record["validation_stationary_lagged_covariance_normalized_error"]) == 1
 
 
 def test_lag_one_velocity_sparse_history_conditions_residual_and_rollout():
@@ -1216,6 +2041,93 @@ def test_velocity_cli_trains_and_evaluates_at_different_lags(shared_data, tmp_pa
     assert np.asarray(report["damping_matrix"]).shape == (shared_data.n_coordinates,) * 2
     assert min(report["stiffness_eigenvalues"]) >= -1e-6
     assert min(report["damping_eigenvalues"]) >= -1e-6
+
+
+def test_restoring_only_cli_warm_start_drops_only_damping(shared_data, tmp_path):
+    parent = tmp_path / "damped_parent"
+    main(["train", "--experiment", shared_data.experiment,
+          "--rank", str(shared_data.rank),
+          "--data-root", shared_data.source_config["data_root"],
+          "--state-variable", "velocity", "--drift-type", "damped_residual",
+          "--hidden-layers", "4", "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(parent)])
+    parent_model, _ = load_model(parent / "best.pt")
+
+    output = tmp_path / "restoring_only"
+    main(["train", "--checkpoint", str(parent / "best.pt"),
+          "--no-structured-damping", "--restoring-orthogonality-weight", ".2",
+          "--restoring-orthogonality-adjust-velocity",
+          "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(output)])
+    model, checkpoint = load_model(output / "best.pt")
+
+    assert not model.config.structured_damping
+    assert checkpoint["model_config"]["structured_damping"] is False
+    assert model.drift_model.raw_damping is None
+    assert "drift_model.raw_damping" not in model.state_dict()
+    torch.testing.assert_close(
+        model.drift_model.damping_matrix(),
+        torch.zeros(shared_data.n_coordinates, shared_data.n_coordinates))
+    # The warm start preserves normalization and all compatible architecture.
+    torch.testing.assert_close(model.state_mean, parent_model.state_mean)
+    torch.testing.assert_close(model.state_std, parent_model.state_std)
+    assert checkpoint["training"]["restoring_orthogonality_weight"] == .2
+    assert checkpoint["training"]["restoring_orthogonality_adjust_velocity"]
+    adjustment = checkpoint["training"][
+        "restoring_orthogonality_velocity_adjustment"]
+    assert np.asarray(adjustment["matrix"]).shape == (
+        shared_data.n_coordinates, shared_data.n_coordinates)
+    assert np.asarray(adjustment["velocity_from_position_matrix"]).shape == (
+        shared_data.n_coordinates, shared_data.n_coordinates)
+    assert adjustment["velocity_covariance_rank"] == shared_data.n_coordinates
+    assert adjustment["position_covariance_rank"] == shared_data.n_coordinates
+    assert adjustment["max_abs_adjusted_position_velocity_correlation"] < 1e-5
+    assert adjustment["max_abs_adjusted_velocity_position_correlation"] < 1e-5
+    assert len(adjustment["adjusted_velocity_variance"]) == shared_data.n_coordinates
+    record = json.loads((output / "metrics.jsonl").read_text())
+    assert record["restoring_orthogonality_weight"] == .2
+    assert "train_restoring_orthogonality_loss" in record
+    assert "validation_restoring_orthogonality_weighted_contribution" in record
+    assert len(record["validation_restoring_residual_projection_coefficients"]) == (
+        shared_data.n_coordinates)
+
+    structured_output = tmp_path / "structured_orthogonal"
+    main(["train", "--checkpoint", str(parent / "best.pt"),
+          "--restoring-orthogonality-weight", ".2",
+          "--damping-orthogonality-weight", ".3",
+          "--restoring-orthogonality-adjust-velocity",
+          "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(structured_output)])
+    structured_model, structured_checkpoint = load_model(
+        structured_output / "best.pt")
+    assert structured_model.config.structured_damping
+    assert structured_model.drift_model.raw_damping is not None
+    assert structured_checkpoint["training"]["damping_orthogonality_weight"] == .3
+    structured_record = json.loads(
+        (structured_output / "metrics.jsonl").read_text())
+    assert structured_record["damping_orthogonality_weight"] == .3
+    assert "train_damping_orthogonality_loss" in structured_record
+    assert "validation_damping_orthogonality_weighted_contribution" in structured_record
+    assert len(structured_record[
+        "validation_damping_residual_projection_coefficients"]) == (
+            shared_data.n_coordinates)
+
+    joint_output = tmp_path / "joint_diagonal_orthogonal"
+    main(["train", "--checkpoint", str(parent / "best.pt"),
+          "--diagonal-linear-orthogonality-weight", ".4",
+          "--diagonal-linear-orthogonality-epsilon", "1e-5",
+          "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(joint_output)])
+    _, joint_checkpoint = load_model(joint_output / "best.pt")
+    assert joint_checkpoint["training"]["diagonal_linear_orthogonality_weight"] == .4
+    assert joint_checkpoint["training"]["diagonal_linear_orthogonality_epsilon"] == 1e-5
+    joint_record = json.loads((joint_output / "metrics.jsonl").read_text())
+    assert joint_record["diagonal_linear_orthogonality_weight"] == .4
+    assert "train_diagonal_linear_orthogonality_loss" in joint_record
+    assert "validation_diagonal_linear_orthogonality_weighted_contribution" in joint_record
+    coefficients = np.asarray(joint_record[
+        "validation_diagonal_linear_residual_projection_coefficients"])
+    assert coefficients.shape == (shared_data.n_coordinates, 2)
 
 
 def test_capillary_energy_cli_persists_structure_and_uses_standard_rollout(shared_data, tmp_path):
@@ -1761,6 +2673,114 @@ def test_joint_checkpoint_warm_starts_both_components_at_larger_lag(shared_data,
                               before.drift_model.network[-1].weight)
     assert not torch.allclose(after.diffusion_model.raw_diagonal,
                               before.diffusion_model.raw_diagonal)
+
+
+@pytest.mark.parametrize("memory_rank", [None, 2])
+def test_velocity_memory_warm_start_trains_only_zero_initialized_memory(
+        shared_data, tmp_path, memory_rank):
+    base, memory = tmp_path / "base", tmp_path / "memory"
+    common = ["--experiment", shared_data.experiment, "--rank", str(shared_data.rank),
+              "--data-root", shared_data.source_config["data_root"],
+              "--state-variable", "velocity", "--history-offsets", "1",
+              "--hidden-layers", "8", "--epochs", "1", "--batch-size", "7",
+              "--device", "cpu"]
+    main(["train", *common, "--output", str(base)])
+    before, _ = load_model(base / "best.pt")
+
+    memory_args = ["train", "--train-mode", "memory", "--checkpoint", str(base),
+                   "--velocity-memory-offsets", "1", "2"]
+    if memory_rank is not None:
+        memory_args += ["--velocity-memory-rank", str(memory_rank),
+                        "--velocity-memory-norm-cap", ".25"]
+    main([*memory_args, "--learning-rate", "1e-3", "--epochs", "1",
+          "--batch-size", "7", "--device", "cpu", "--output", str(memory)])
+    after, checkpoint = load_model(memory / "best.pt")
+
+    assert after.config.velocity_memory_offsets == (1, 2)
+    assert after.config.velocity_memory_rank == memory_rank
+    assert after.config.history_steps == 3
+    assert after.config.effective_history_offsets == (1,)
+    assert checkpoint["training"]["train_mode"] == "memory"
+    assert checkpoint["training"]["initial_checkpoint"] == str((base / "best.pt").resolve())
+    learned = (after.velocity_memory if memory_rank is None
+               else after.velocity_memory_coefficients)
+    assert not torch.equal(learned, torch.zeros_like(learned))
+    for name, value in before.drift_model.state_dict().items():
+        torch.testing.assert_close(after.drift_model.state_dict()[name], value)
+    for name, value in before.diffusion_model.state_dict().items():
+        torch.testing.assert_close(after.diffusion_model.state_dict()[name], value)
+    torch.testing.assert_close(after.state_mean, before.state_mean)
+    torch.testing.assert_close(after.state_std, before.state_std)
+    torch.testing.assert_close(after.target_mean, before.target_mean)
+    torch.testing.assert_close(after.target_std, before.target_std)
+
+
+def test_oscillator_memory_warm_start_trains_only_recurrent_extension(
+        shared_data, tmp_path):
+    base, memory = tmp_path / "base", tmp_path / "oscillator"
+    common = ["--experiment", shared_data.experiment, "--rank", str(shared_data.rank),
+              "--data-root", shared_data.source_config["data_root"],
+              "--state-variable", "velocity", "--history-offsets", "1",
+              "--hidden-layers", "8", "--epochs", "1", "--batch-size", "7",
+              "--device", "cpu"]
+    main(["train", *common, "--output", str(base)])
+    before, _ = load_model(base / "best.pt")
+
+    main(["train", "--train-mode", "memory", "--checkpoint", str(base),
+          "--velocity-oscillator-periods", "8",
+          "--velocity-oscillator-burnin", "4",
+          "--velocity-oscillator-radius-init", ".9",
+          "--velocity-oscillator-norm-cap", ".2",
+          "--learning-rate", "1e-3", "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(memory)])
+    after, checkpoint = load_model(memory / "best.pt")
+
+    assert after.config.velocity_oscillator_periods == (8.,)
+    assert after.config.history_steps == 4
+    assert after.config.effective_history_offsets == (1,)
+    assert checkpoint["training"]["train_mode"] == "memory"
+    assert not torch.equal(after.velocity_oscillator_coefficients,
+                           torch.zeros_like(after.velocity_oscillator_coefficients))
+    assert torch.all(after.velocity_oscillator_radius() < 1)
+    for name, value in before.drift_model.state_dict().items():
+        torch.testing.assert_close(after.drift_model.state_dict()[name], value)
+    for name, value in before.diffusion_model.state_dict().items():
+        torch.testing.assert_close(after.diffusion_model.state_dict()[name], value)
+    torch.testing.assert_close(after.state_mean, before.state_mean)
+    torch.testing.assert_close(after.state_std, before.state_std)
+    torch.testing.assert_close(after.target_mean, before.target_mean)
+    torch.testing.assert_close(after.target_std, before.target_std)
+
+
+def test_innovation_memory_warm_start_trains_only_colored_forcing(
+        shared_data, tmp_path):
+    base, memory = tmp_path / "base", tmp_path / "innovation"
+    common = ["--experiment", shared_data.experiment, "--rank", str(shared_data.rank),
+              "--data-root", shared_data.source_config["data_root"],
+              "--state-variable", "velocity", "--history-offsets", "1",
+              "--hidden-layers", "8", "--epochs", "1", "--batch-size", "7",
+              "--device", "cpu"]
+    main(["train", *common, "--output", str(base)])
+    before, _ = load_model(base / "best.pt")
+
+    main(["train", "--train-mode", "memory", "--checkpoint", str(base),
+          "--velocity-innovation-offsets", "1", "2", "5",
+          "--velocity-innovation-rank", "2",
+          "--velocity-innovation-norm-cap", ".8",
+          "--learning-rate", "1e-3", "--epochs", "1", "--batch-size", "7",
+          "--device", "cpu", "--output", str(memory)])
+    after, checkpoint = load_model(memory / "best.pt")
+
+    assert after.config.velocity_innovation_offsets == (1, 2, 5)
+    assert after.config.velocity_innovation_rank == 2
+    assert after.config.history_steps == 6
+    assert checkpoint["training"]["train_mode"] == "memory"
+    assert not torch.equal(after.velocity_innovation_coefficients,
+                           torch.zeros_like(after.velocity_innovation_coefficients))
+    for name, value in before.drift_model.state_dict().items():
+        torch.testing.assert_close(after.drift_model.state_dict()[name], value)
+    for name, value in before.diffusion_model.state_dict().items():
+        torch.testing.assert_close(after.diffusion_model.state_dict()[name], value)
 
 
 def test_mismatched_dt_is_rejected(shared_data, tmp_path):

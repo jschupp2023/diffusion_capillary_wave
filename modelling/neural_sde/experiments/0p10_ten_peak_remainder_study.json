@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_v1",
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_ten_peak_oracle_v1",
+  "total_timeout_seconds": 7200,
+  "training_timeout_seconds": 1800,
+  "evaluation_timeout_seconds": 900,
+  "scientific_goal": "Determine whether a TCN63 neural SDE can learn the broadband remainder after a contiguous ten-peak oscillator bank removes 84-1041 Hz, and whether applying the same fixed remainder operator to generated neural paths improves the final hybrid without instability.",
+  "constraints": [
+    "Fit and select with training repetitions 1-12 and validation repetitions 13-14 only; test repetitions 15-16 stay locked.",
+    "Keep rank10 plus the stored HP50 spatial mean, native sampling, TCN63, damped-residual drift and constant diagonal diffusion fixed.",
+    "Use the exact ten contiguous midpoint bands and frozen oscillator artifacts from the completed oracle study.",
+    "Every evaluation compares raw and output-filtered versions of the identical neural rollout and oscillator draws.",
+    "Output filtering is offline zero-phase processing for stationary generation, not a causal forecasting procedure.",
+    "Do not judge success from NLL or finite survival alone; compare broadband PSD above 1.5 kHz, covariance, energy, ACF and contamination of the oscillator region."
+  ],
+  "arms": [
+    {
+      "id": "nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Five-epoch one-step NLL parent from random initialization.",
+      "options": ["--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5"]
+    },
+    {
+      "id": "nll_e10",
+      "mode": "finetune",
+      "parent": "nll_e5",
+      "description": "Five more NLL epochs at lower learning rate to test convergence before rollout objectives.",
+      "options": ["--multistep-weight", "0", "--learning-rate", "0.00001", "--epochs", "5"]
+    },
+    {
+      "id": "joint_es_e3",
+      "mode": "finetune",
+      "parent": "nll_e10",
+      "description": "Short joint displacement-velocity energy-score and moment calibration from the converged NLL parent.",
+      "options": ["--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "20", "100", "300", "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.03", "--stationary-variance-weight", "0.001", "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125", "--learning-rate", "0.00001", "--epochs", "3"]
+    }
+  ],
+  "evaluation": {
+    "horizon": 60000,
+    "conditions": 2,
+    "ensemble": 4,
+    "seed": 41,
+    "device": "cuda",
+    "diffusion_scales": [1.0, 2.0]
+  }
+}

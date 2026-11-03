@@ -184,6 +184,31 @@ def test_quantitative_rollout_metrics_identical_populations(rollout):
                                    atol=1e-14)
 
 
+def test_quantitative_quick_summary_reports_full_and_trimmed_moments(
+        rollout, tmp_path, monkeypatch):
+    mask = np.zeros(rollout.reference.shape[:-1], dtype=bool)
+    mask[:, :100] = True
+    trim = dict(train_trim_percent=5., retained_reference_frames=int(mask.sum()))
+    monkeypatch.setattr(
+        "data_analysis.rollout_metrics.reference_training_trim_population",
+        lambda _: (mask, trim))
+    out = analyze_metrics(
+        rollout, nperseg=128, psd_lower_frequency=1,
+        output=tmp_path / "trimmed_quantitative")
+    report = json.loads((out / "summary.json").read_text())
+    quick = (out / "quick_summary.md").read_text()
+    pod = report["coefficient_statistics"]["pod_fluctuation_coordinates"]
+    spatial = report["coefficient_statistics"]["spatial_mean_coordinate"]
+    assert "| Quantity | Full reference | Training-trimmed reference |" in quick
+    assert "Generated trajectories are untrimmed in both columns." in quick
+    assert (f"| POD covariance trace | "
+            f"**{pod['untrimmed']['covariance_trace_ratio']:.3g}×** | "
+            f"**{pod['generated_untrimmed_vs_reference_training_trimmed']['covariance_trace_ratio']:.3g}×** |") in quick
+    assert (f"| Spatial-mean variance | "
+            f"**{spatial['untrimmed']['covariance_trace_ratio']:.3g}×** | "
+            f"**{spatial['generated_untrimmed_vs_reference_training_trimmed']['covariance_trace_ratio']:.3g}×** |") in quick
+
+
 def test_training_trim_is_applied_only_to_reference_frames():
     reference = np.array([[[0.], [1.], [2.], [3.], [20.], [21.]]])
     specification = dict(cutoff=2., state_std=np.array([1.]), train_trim_percent=5.,
@@ -246,6 +271,11 @@ def test_one_command_creates_all_rollout_plots(rollout, tmp_path, monkeypatch):
     assert (output / "coordinates" / "trajectories.png").exists()
     assert (output / "quantitative" / "summary.json").exists()
     assert (output / "quantitative" / "quick_summary.md").exists()
+    assert (output / "psd_peaks" / "psd_peaks.png").exists()
+    peak_summary = json.loads((output / "quantitative" / "summary.json").read_text())["spectral_peaks"]
+    assert peak_summary["requested_nperseg"] == 8192
+    assert peak_summary["metrics"]["peak_contrast_error_db"] is None
+    assert "Spectral peaks" in (output / "quantitative" / "quick_summary.md").read_text()
     assert (output / "surface_video" / "reference_vs_generated.mp4").exists()
     assert captured["reference"].shape == (5, 3, 3)
     np.testing.assert_allclose(captured["generated"], captured["reference"])

@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score",
+  "training_timeout_seconds": 2700,
+  "scientific_goal": "Test whether a joint displacement-velocity energy score corrects the 0p20 TCN15 position-amplitude excess that remains despite approximately calibrated endpoint velocities.",
+  "scientific_constraints": [
+    "Use validation repetitions 13 and 14 only for selection. Test repetitions 15 and 16 remain locked.",
+    "Preserve the restoring-only TCN15 architecture, channels 64, kernel 3, dilations 1,2,4, full constant diffusion, rank 20, stored 50 Hz high-pass spatial mean, native-lag velocity state, exact 5% training trim, seed 0 and five fresh epochs.",
+    "Change only the energy-score target and its declared metric weights relative to the matched weight-zero restoring-only control. Do not add orthogonality, moment, stability, history-noise, MC-GMM, or architectural changes.",
+    "The joint endpoint is concatenated standardized displacement and velocity. Position and velocity block weights act inside the squared Euclidean metric; both must remain positive.",
+    "Complete the two matched initial trials: balanced position/velocity weights 1/1 and position-emphasized weights 2/1. Both retain horizons 2,4,10,20, equal normalized horizon weights, total multistep weight 0.03, M4, batch sampling fraction 0.005, and drift-plus-diffusion gradients.",
+    "The balanced joint score is already stronger in raw dimension than the velocity-only score; do not raise the total multistep coefficient merely to equalize raw objective values.",
+    "The matched velocity-only control has trimmed-reference energy 1.508, covariance trace 1.411 and POD mean error 0.241. A joint trial succeeds only through rollout improvement, not through a lower training loss.",
+    "Screen every candidate on the same 32 full-strength validation paths for 5000 steps. Use exact checkpoint-trimmed energy and moments as primary metrics; treat ordinary PSD and consecutive-increment metrics as secondary untrimmed diagnostics.",
+    "After both initial trials, at most one fresh horizon-50 follow-up is allowed if joint scoring improves position statistics but leaves material excess amplitude. That follow-up must use horizons 2,4,10,20,50, weights 0.10,0.10,0.15,0.25,0.40 and M4 at every horizon while keeping total weight 0.03.",
+    "Each training subprocess has a hard 2700-second timeout. Do not resume timed-out partial training.",
+    "Promote at most one candidate to 50000 validation steps only if it improves both energy and covariance distance from one relative to the matched velocity-only control without material mean, stability, innovation, or PSD degradation. Otherwise stop."
+  ],
+  "advisor_guidance": "Complete both matched joint-score trials before deciding. Compare each against the imported velocity-only restoring TCN15 and against each other. Inspect saved normalized horizon weights, position/velocity block weights, per-horizon raw scores and weighted contributions; do not compare validation_total_loss across different block metrics as though its scale were invariant. If one joint arm improves energy and covariance together but remains materially above one, the only authorized third training trial is the fresh horizon-50 schedule with long-horizon weights 0.10,0.10,0.15,0.25,0.40. Choose position weight 1 or 2 based on the matched h20 evidence. Do not increase the total multistep weight, change particle count, alter the TCN, add moment losses, or request another implementation. Keep test repetitions locked.",
+  "budget": {
+    "max_training_trials": 3,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 3,
+  "allowed_training_modes": [
+    "fresh"
+  ],
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p20/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--no-structured-damping": true,
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 15,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [1, 2, 4],
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-horizons": [2, 4, 10, 20],
+    "--multistep-horizon-weights": [1, 1, 1, 1],
+    "--multistep-position-weight": 1,
+    "--multistep-velocity-weight": 1,
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift", "diffusion"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--multistep-position-weight": [[1], [2]],
+    "--multistep-horizons": [[2, 4, 10, 20], [2, 4, 10, 20, 50]],
+    "--multistep-horizon-weights": [[1, 1, 1, 1], [0.10, 0.10, 0.15, 0.25, 0.40]],
+    "--multistep-particle-counts": [[4, 4, 4, 4], [4, 4, 4, 4, 4]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.35, 2.75],
+    "pod_covariance_trace_ratio_range": [0.35, 2.75]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 21814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "tcn15_velocity_es_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_restoring_orthogonality/trials/fresh_tcn15_restoring_adjusted_orth_w0_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_restoring_orthogonality/trials/fresh_tcn15_restoring_adjusted_orth_w0_e5/rollout_5000_screen",
+      "hypothesis": "Matched fresh restoring-only TCN15 with the existing velocity-only energy score.",
+      "change_family": "external_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_tcn15_joint_es_pos1_vel1_h20_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_velocity_es_reference",
+      "change_family": "joint_energy_score",
+      "hypothesis": "Balanced joint displacement-velocity scoring reduces position energy and covariance excess while retaining velocity calibration.",
+      "expected_observation": "Energy and covariance both move toward one relative to the velocity-only reference without material POD-mean, innovation, stability, or PSD degradation.",
+      "overrides": []
+    },
+    {
+      "id": "fresh_tcn15_joint_es_pos2_vel1_h20_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_velocity_es_reference",
+      "change_family": "joint_energy_score_block_weight",
+      "hypothesis": "Twice the standardized displacement metric weight supplies enough position pressure to reduce the integrated amplitude excess more than balanced joint scoring without sacrificing endpoint velocities.",
+      "expected_observation": "Energy and covariance improve jointly beyond the balanced arm while velocity innovations and PSD remain acceptable.",
+      "overrides": [
+        {
+          "flag": "--multistep-position-weight",
+          "tokens": [2],
+          "remove": false
+        }
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

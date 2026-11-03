@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_long_horizon_v1",
+  "component_manifest": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_v1/data/manifest.json",
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_ten_peak_oracle_v1",
+  "stable_parent": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_architectures_v1/trials/mlp_diagonal_joint_calibration/best.pt",
+  "baseline_evaluation": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_architectures_v1/confirmations/mlp_diagonal_joint_calibration",
+  "total_timeout_seconds": 28800,
+  "training_timeout_seconds": 3600,
+  "evaluation_timeout_seconds": 1200,
+  "scientific_goal": "Correct the stable diagonal MLP remainder model's gradual variance decay using longer closed-loop objectives, without post-hoc diffusion scaling or loss of oscillator peak recovery.",
+  "constraints": [
+    "Use the identical rank-10 remainder cache, split, preprocessing, and frozen oscillator bank.",
+    "Select only at learned diffusion scale 1.0 and keep test repetitions 15-16 locked.",
+    "Use the independently confirmed stable diagonal MLP as the common parent for focused long-horizon ablations.",
+    "Treat the oracle hybrid energy 0.896 as the practical independent-component reference; prioritize energy in approximately 0.8-1.1 together with overall PSD and peak recovery.",
+    "Record and continue after any unstable, nonfinite, or timed-out candidate.",
+    "Do not infer success from training losses; require finite 60000-step screens and independent confirmation."
+  ],
+  "fresh_base": [
+    "--experiment", "0p10", "--rank", "10",
+    "--validation-reps", "13", "14", "--test-reps", "15", "16",
+    "--spatial-mean-highpass-hz", "50", "--state-variable", "velocity", "--lag", "1",
+    "--history-offsets", "1", "--hidden-layers", "64", "64", "--activation", "silu",
+    "--diffusion-init", "0.1", "--train-mode", "joint", "--train-trim-percent", "0",
+    "--batch-size", "256", "--indexed-training-batches", "--device", "cuda"
+  ],
+  "arms": [
+    {
+      "id": "mlp_long_joint",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Extend joint distribution and endpoint-variance calibration beyond the remainder's resolved correlation times.",
+      "options": [
+        "--seed", "51", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "100", "300", "1000", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.0025", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.01",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "100", "300", "1000",
+        "--stationary-mean-trajectories", "32", "--stationary-mean-batch-fraction", "0.01"
+      ]
+    },
+    {
+      "id": "mlp_long_velocity",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Give long-horizon velocity statistics stronger pressure on the drift-diffusion balance.",
+      "options": [
+        "--seed", "52", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.6", "--multistep-objective", "energy_score", "--multistep-target", "velocity",
+        "--multistep-horizons", "100", "300", "1000", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.0025", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.01",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "100", "300", "1000",
+        "--stationary-mean-trajectories", "32", "--stationary-mean-batch-fraction", "0.01"
+      ]
+    },
+    {
+      "id": "mlp_long_covariance",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Add long-lag covariance pressure to distinguish correct persistence from merely correct marginal variance.",
+      "options": [
+        "--seed", "53", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "100", "300", "1000", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.0025", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.01",
+        "--stationary-variance-weight", "0.003", "--stationary-lagged-covariance-weight", "0.003",
+        "--stationary-lagged-covariance-mode-count", "10", "--stationary-lagged-covariance-horizons", "100", "300", "1000",
+        "--stationary-lagged-covariance-normalization", "training",
+        "--stationary-mean-horizons", "100", "300", "1000", "--stationary-mean-trajectories", "32",
+        "--stationary-mean-batch-fraction", "0.01"
+      ]
+    },
+    {
+      "id": "mlp_no_damping_long_joint",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Remove the explicit diagonal damping operator and test whether it causes the remainder's long-run variance loss.",
+      "options": [
+        "--no-structured-damping", "--seed", "54", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "100", "300", "1000", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.0025", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.01",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "100", "300", "1000",
+        "--stationary-mean-trajectories", "32", "--stationary-mean-batch-fraction", "0.01"
+      ]
+    },
+    {
+      "id": "unstructured_mlp_nll_parent",
+      "mode": "fresh",
+      "evaluate": false,
+      "description": "Unstructured memory-light MLP one-step parent without imposed restoring or damping operators.",
+      "options": [
+        "--drift-type", "mlp", "--residual-architecture", "mlp", "--diffusion-type", "diagonal",
+        "--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0",
+        "--learning-rate", "0.0001", "--epochs", "5", "--seed", "61"
+      ]
+    },
+    {
+      "id": "unstructured_mlp_long_joint",
+      "mode": "finetune",
+      "parent": "unstructured_mlp_nll_parent",
+      "evaluate": true,
+      "description": "Test whether the explicit structured damping parameterization itself causes the under-energetic remainder.",
+      "options": [
+        "--seed", "62", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "100", "300", "1000", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.0025", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.01",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "100", "300", "1000",
+        "--stationary-mean-trajectories", "32", "--stationary-mean-batch-fraction", "0.01"
+      ]
+    }
+  ],
+  "screen": {"horizon": 60000, "conditions": 1, "ensemble": 4, "seed": 81, "device": "cuda"},
+  "confirmation": {"count": 2, "horizon": 60000, "conditions": 2, "ensemble": 8, "seed": 181, "device": "cuda"}
+}

@@ -1,0 +1,317 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn7_staged_calibration",
+  "training_timeout_seconds": 3600,
+  "scientific_goal": "Test seven-frame TCN drift with joint energy-score calibration, then gentle moment refinement, using matched continuation controls and direct score-sensitivity evidence.",
+  "scientific_constraints": [
+    "Use validation repetitions 13 and 14 for selection; test repetitions 15 and 16 remain locked.",
+    "Preserve restoring-only TCN drift, rank 20, full constant diffusion, stored 50 Hz high-pass spatial mean, native-lag velocity state, 5 percent trim, seed 0, and all sampling settings. Use seven context frames, kernel 3, three 64-channel blocks, dilations 1,1,1. This retains TCN15 depth and parameter count.",
+    "Start with exactly one fresh five-epoch baseline without moment penalties. Joint energy score uses position/velocity weights 2/1, horizons 2,4,10,20 equal weights, M4, coefficient 0.03, batch fraction 0.005, drift plus diffusion routing.",
+    "Inspect training histories, frozen raw and weighted gradients across three window batches and three particle seeds, raw routed cosines including zero-weight moments, and endpoint score sensitivity before continuing.",
+    "Conditional endpoint probes include diagnostic-only horizons 50 and 100. An oracle correction lowering the score is evidence of score sensitivity, not proof that the model gradient can realize that correction. Marginal position/velocity scores do not add to the joint score.",
+    "An ES calibration pair must start from the SAME fresh TCN7 checkpoint: one no-change continuation and one changing exactly one coefficient. Use one epoch and learning rate 1e-5 for both. Alternatives are total ES weight 0.1 OR position metric weight 4, never both.",
+    "Moment refinement uses a selected stable pre-moment parent and a SAME-parent no-moment continuation control. Keep its ES settings. One epoch, learning rate 1e-5, mean and variance coefficients 0.001 each, endpoints 20,50,100, 64 starts, batch fraction 0.0125. Training-set preflight must find finite raw losses and gradients first. No moments from random initialization.",
+    "The first gentle moment stage is zero to 0.001. Do not escalate further or restart fresh within this campaign. Stop on nonfinite diagnostics/training and identify the failure instead of repeating it.",
+    "At most five training jobs total: baseline, ES control, ES alternative, moment control, moment refinement. Skip unsupported stages or stop early rather than force a change.",
+    "Screen every candidate using the same 32 validation paths for 5000 steps. Judge checkpoint-trimmed deformation energy, mean, covariance, leading modes and spatial mean, plus PSD, innovations, survival and boundedness. Promote at most one promising checkpoint to 50000 steps.",
+    "The TCN7 and imported TCN15 training trim eligibility and fitted normalization can differ. Frozen diagnostics require at least 15 history steps for a shared history stencil; their checkpoint-specific normalization still differs. Sensitivity uses max-horizon-100-clean windows for all horizons. Do not describe this as an exact same-population architecture ablation.",
+    "Finite frozen preflight and lower validation loss do not guarantee long-rollout stability. Do not call five epochs converged; continuation controls measure ordinary optimizer drift."
+  ],
+  "advisor_guidance": "Use these exact change_family roles: short_history_baseline (initial only), es_control, es_calibration, moment_control, moment_refinement. Each is allowed once and guards enforce the order. All adaptive jobs must explicitly override --epochs to 1 and --learning-rate to 1e-5; base options do NOT inherit the parent's objective settings. Read objective_balance, score_sensitivity, training history, and trimmed rollout metrics. First ask whether contraction or mean correction improves joint score consistently across window batches and seeds, especially leading POD/spatial mean. Examine observation and subtracted-pair distances and weighted position squared-error fraction; an amplitude perturbation can improve or worsen conditional calibration independently of autonomous long-run energy. Look for negligible expected ES gradients, rare large selected updates, raw gradient conflict and batch/particle variability; do not equalize norms blindly or claim cosine proves causality. If ES pressure is too weak, propose es_control from the fresh baseline, then es_calibration from that same baseline with weight 0.1. If position sensitivity is diluted instead, use position weight 4 with total weight 0.03. Never change both. Give numerical evidence in decisions. If neither change is justified, skip ES pair or stop. Choose a stable pre-moment parent only after comparing its matched controls. Run moment_control with no moments from that parent, then moment_refinement from the SAME parent with mean=variance=0.001. Explicitly carry over any nonbase ES settings in both jobs. The controller performs frozen TRAIN preflight before refinement, with raw moments even when the parent weights are zero. Request implementation on numerical failure or unavailable required evidence; do not repeatedly submit invalid decisions. All five jobs are a cap, not a quota. Select only meaningful improvements in energy AND covariance distance from one, preserving mean, leading modes, spatial mean, PSD and stability; do not pick by NLL alone. The broad screen_gate only screens gross failures, not scientific success. Only promote a credible candidate. Report uncertain or negative outcomes honestly and stop. No new losses, architectures, horizon/particle/sampling changes, or diffusion changes. Override tokens must match the declared string representations exactly: use learning-rate token \"1e-05\", epochs \"1\", moment weights \"0.001\", and integer position weights \"2\" or \"4\". If score diagnostics or gradient preflight are nonfinite, stop and request diagnosis. Reserve confirmation until the selected stage comparisons are finished.",
+  "budget": {
+    "max_training_trials": 5,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 5,
+  "allowed_training_modes": [
+    "fresh",
+    "finetune"
+  ],
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p20/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [
+      13,
+      14
+    ],
+    "--test-reps": [
+      15,
+      16
+    ],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [
+      1
+    ],
+    "--hidden-layers": [
+      64,
+      64
+    ],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--no-structured-damping": true,
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 7,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [
+      1,
+      1,
+      1
+    ],
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-horizons": [
+      2,
+      4,
+      10,
+      20
+    ],
+    "--multistep-horizon-weights": [
+      1,
+      1,
+      1,
+      1
+    ],
+    "--multistep-position-weight": 2,
+    "--multistep-velocity-weight": 1,
+    "--multistep-particle-counts": [
+      4,
+      4,
+      4,
+      4
+    ],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": [
+      "drift",
+      "diffusion"
+    ],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stationary-mean-horizons": [
+      20,
+      50,
+      100
+    ],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.0125,
+    "--stationary-mean-validation-seed": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--history-noise-weight": 0,
+    "--stability-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--learning-rate": [
+      [
+        0.001
+      ],
+      [
+        1e-05
+      ]
+    ],
+    "--epochs": [
+      [
+        5
+      ],
+      [
+        1
+      ]
+    ],
+    "--multistep-weight": [
+      [
+        0.03
+      ],
+      [
+        0.1
+      ]
+    ],
+    "--multistep-position-weight": [
+      [
+        2
+      ],
+      [
+        4
+      ]
+    ],
+    "--stationary-mean-weight": [
+      [
+        0
+      ],
+      [
+        0.001
+      ]
+    ],
+    "--stationary-variance-weight": [
+      [
+        0
+      ],
+      [
+        0.001
+      ]
+    ]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [
+      0.35,
+      3.0
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.35,
+      3.0
+    ]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "objective_balance_diagnostic": {
+    "split": "validation",
+    "device": "cuda",
+    "windows": 256,
+    "moment_trajectories": 64,
+    "moment_horizons": [
+      20,
+      50,
+      100
+    ],
+    "window_seed": 41019,
+    "seeds": [
+      51019,
+      51020,
+      51021
+    ],
+    "timeout_seconds": 1800,
+    "output_name": "objective_balance_short_history_v2",
+    "window_seeds": [
+      41019,
+      41020,
+      41021
+    ],
+    "min_history": 15
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 41814,
+    "nperseg": 1024,
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "seed_runs": [
+    {
+      "id": "full_es_only_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5/rollout_5000_screen",
+      "hypothesis": "External TCN15 joint-score reference; training eligibility and fitted normalization can differ from TCN7.",
+      "change_family": "external_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_tcn7_joint_es_pos2_e5",
+      "training_mode": "fresh",
+      "parent_trial": "full_es_only_reference",
+      "change_family": "short_history_baseline",
+      "hypothesis": "A shorter contiguous history with unchanged TCN depth and parameter count may improve autonomous amplitude calibration.",
+      "expected_observation": "Stable rollouts and measurable conditional score sensitivity to mean/amplitude corrections; quantify any energy/covariance improvement over TCN15.",
+      "overrides": []
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  },
+  "staged_tcn_calibration": true,
+  "energy_score_sensitivity": {
+    "device": "cuda",
+    "windows": 128,
+    "particles": 16,
+    "min_history": 15,
+    "window_seeds": [
+      41019,
+      41020,
+      41021
+    ],
+    "seeds": [
+      51019,
+      51020,
+      51021
+    ],
+    "horizons": [
+      2,
+      4,
+      10,
+      20,
+      50,
+      100
+    ],
+    "timeout_seconds": 1800,
+    "output_name": "energy_score_sensitivity_h100_v1"
+  }
+}

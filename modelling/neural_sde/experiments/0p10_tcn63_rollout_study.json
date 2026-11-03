@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_tcn63_rollout",
+  "scientific_goal": "Preserve the 0p10 TCN63 checkpoint's improved held-out one-step prediction while learning stable autonomous stochastic rollouts. Screen every fine-tune for 1000 native steps at full noise; only broadly reasonable candidates receive detailed innovation diagnostics and possible 50000-step confirmation.",
+  "scientific_constraints": [
+    "Use finetune mode only. Start the four queued controls from the exact tcn63_parent checkpoint runs/comparison/0p10_tcn63/best.pt. Adaptive objective ablations should also use this parent unless explicitly testing continuation of a named successful arm.",
+    "Keep the unstructured TCN architecture, dense 63-token context, 64 channels, native-lag velocity update, constant diagonal diffusion parameterization, rank 20, shared basis, 50 Hz high-pass spatial mean and saved 5 percent full-stencil training trim fixed. Fine-tuning must reuse the checkpoint normalization and saved cutoff. The more recent untrimmed structured models are not the baseline.",
+    "Selection uses validation repetitions 13 and 14 only. Test repetitions 15 and 16 remain locked.",
+    "Complete the four queued three-epoch controls before adaptive tuning: one-step continuation, velocity multistep weights 0.03 and 0.1, and displacement multistep weight 0.03. All use learning rate 0.0001, batch size 128 and seed 0.",
+    "Keep one-step NLL active on all retained one-step examples. Additional multistep gradients go to drift only; ordinary one-step gradients still train drift and diffusion. No endpoint-moment, orthogonality or stability penalty is added in this study.",
+    "Score all 21 coordinates at every multistep horizon, including all 20 POD modes. Do not hide high-mode instability by reducing scored mode counts.",
+    "Use the fixed 1000-step validation screen with 8 conditions, 4 trajectories each, seed 814 and full-strength trained diffusion. Do not clip, trim, reject or rescale generated trajectories.",
+    "The hard screen gate requires every path finite, peak POD RMS in checkpoint position-standardized units <=10, maximum absolute standardized coordinate <=50, and energy and POD covariance-trace ratios within [0.25,4]. These broad limits permit further evaluation, not a scientific success claim. Inspect mean bias, modal amplitudes, late growth and PSD as well.",
+    "Only promote a passing screened candidate with preserved one-step prediction and acceptable innovation calibration/ACF. Confirmation uses independent seed 1814, 8 conditions, 4 trajectories, and 50000 native steps. A finite 1000-step rollout is not proof of long-term stability.",
+    "Training history is trim-enforced but long reference rollout windows are not. Report the quantitative summary's reference population. Never compare the 1000-step PSD directly with 50000-step frequency resolution or optimize untrimmed reference power blindly.",
+    "Use at most six training trials and two long confirmations. On repeated failure, report the failure mode and stop or request a reviewed implementation; do not keep increasing unconstrained capacity or launch an unbounded search."
+  ],
+  "advisor_guidance": "The original 0p10_tcn63 checkpoint has validation one-step NLL 19.53 versus approximately 29 for the lag-1 MLP. On 4096 identical retained validation windows the TCN scored 19.58 versus 27.86 and reduced POD1 lag-one innovation correlation from 0.898 to -0.092. Nevertheless saved full-noise paths grow catastrophically within hundreds of steps and become nonfinite around 2000. Two measured-start probes stayed bounded for 5000 steps with zero or half noise, but switching noise off after escape at step 300 did not rescue any of four paths. Structured restoring-only, restoring+damping, and untrimmed restoring-orthogonality TCN runs also failed according to the user; do not repeat those arms. The current hypothesis is inaccurate feedback on self-generated histories. Compare the queued matched objective variants first, retain their separate one-step and multistep metrics, and reject merely finite but exploding or collapsed screens. The imported 500-step parent rollout is already catastrophically inflated; it is not a passing screen. After the four controls, allow at most two targeted follow-ups: e.g. a smaller weight/lower learning rate to retain local fit, or horizons 5,10,20,50 if short horizons improve prediction but not stability. Use examples-level multistep subsampling, not full-batch particle expansion, because TCN BPTT through 63-token contexts is memory-intensive. The baseline innovation diagnostic supplies a matched validation reference; successful screens get the same diagnostic. Never claim the 0p10_lag1_tcn63 directory is a 0p10 control: its saved checkpoint points to the 0p20 model. Promote only clearly justified passing candidates, otherwise use the remaining bounded training trials or stop with evidence. Review exact checkpoint/source provenance rather than relying on directory names.",
+  "budget": {"max_training_trials": 6, "max_confirmations": 2},
+  "max_overrides_per_trial": 6,
+  "allowed_training_modes": ["finetune"],
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5, 10, 20],
+    "--multistep-particle-counts": [32, 32, 32, 32],
+    "--multistep-window-fraction": 0.025,
+    "--multistep-window-sampling": "examples",
+    "--multistep-gradient-groups": ["drift"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--stability-weight": 0,
+    "--learning-rate": 0.0001,
+    "--batch-size": 128,
+    "--epochs": 3,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [[0], [0.01], [0.03], [0.1]],
+    "--multistep-target": [["velocity"], ["displacement"]],
+    "--multistep-horizons": [[2, 5], [2, 5, 10, 20], [5, 10, 20, 50]],
+    "--multistep-particle-counts": [[32, 32], [32, 32, 32, 32], [64, 64, 32, 32]],
+    "--multistep-window-fraction": [[0.0125], [0.025], [0.05]],
+    "--learning-rate": [[0.00003], [0.0001]],
+    "--epochs": [[3], [5]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.25, 4],
+    "pod_covariance_trace_ratio_range": [0.25, 4]
+  },
+  "innovation": {
+    "split": "validation", "device": "cuda", "batch_size": 256,
+    "max_lag": 512, "threshold": 0.1, "consecutive": 100,
+    "min_pairs": 1000, "nperseg": 1024,
+    "output_name": "validation_innovation_diagnostic"
+  },
+  "screen": {
+    "horizon": 1000, "conditions": 8, "ensemble_size": 4,
+    "batch_size": 4, "device": "cuda", "seed": 814,
+    "nperseg": 512, "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 50000, "conditions": 8, "ensemble_size": 4,
+    "batch_size": 4, "device": "cuda", "seed": 1814,
+    "nperseg": 1024, "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [{
+    "id": "tcn63_parent",
+    "run_dir": "runs/comparison/0p10_tcn63",
+    "rollout_dir": "runs/comparison/0p10_tcn63/rollout_500_validation",
+    "hypothesis": "The unstructured one-step TCN has improved conditional predictions but catastrophically inflated autonomous trajectories, even at 500 steps.",
+    "change_family": "seed_one_step_tcn"
+  }],
+  "initial_trials": [
+    {
+      "id": "one_step_continuation_e3", "training_mode": "finetune",
+      "parent_trial": "tcn63_parent", "change_family": "one_step_control",
+      "hypothesis": "A matched low-learning-rate continuation tests whether further one-step optimization alone removes the instability.",
+      "expected_observation": "Local NLL may improve, but a failed screen establishes the need for closed-loop training.",
+      "overrides": [{"flag": "--multistep-weight", "tokens": ["0"], "remove": false}]
+    },
+    {
+      "id": "velocity_h2_5_10_20_w0p03_e3", "training_mode": "finetune",
+      "parent_trial": "tcn63_parent", "change_family": "multistep_velocity",
+      "hypothesis": "A modest short-horizon closed-loop velocity likelihood corrects accumulation of generated-history errors while retaining one-step fit.",
+      "expected_observation": "Finite and bounded 1000-step paths with preserved validation one-step NLL and innovation ACF.",
+      "overrides": []
+    },
+    {
+      "id": "velocity_h2_5_10_20_w0p1_e3", "training_mode": "finetune",
+      "parent_trial": "tcn63_parent", "change_family": "multistep_weight",
+      "hypothesis": "A stronger weight on the same generated paths improves recovery from excursions more than weight 0.03.",
+      "expected_observation": "A better stability screen without destroying variance or substantially degrading conditional fit.",
+      "overrides": [{"flag": "--multistep-weight", "tokens": ["0.1"], "remove": false}]
+    },
+    {
+      "id": "displacement_h2_5_10_20_w0p03_e3", "training_mode": "finetune",
+      "parent_trial": "tcn63_parent", "change_family": "multistep_target",
+      "hypothesis": "Endpoint displacement likelihood constrains integrated position errors more effectively than endpoint velocity likelihood.",
+      "expected_observation": "Less amplitude growth than the matched velocity arm, retaining local prediction and noncollapsed spectra.",
+      "overrides": [{"flag": "--multistep-target", "tokens": ["displacement"], "remove": false}]
+    }
+  ],
+  "advisor": {"mode": "codex", "command": "codex", "model": null}
+}

@@ -1,0 +1,238 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn_rescue_90m",
+  "training_timeout_seconds": 2700,
+  "scientific_goal": "Find an economical stable rank-20 0p20 TCN Neural-SDE on the exact 5%-trimmed population using energy-score multistep training, testing temporal context, score weight, horizon set, and explicit restoring/damping structure without returning to MC-GMM.",
+  "scientific_constraints": [
+    "Tune only on validation repetitions 13 and 14; test repetitions 15 and 16 remain locked.",
+    "Every candidate is trained fresh so architecture, drift structure, and diffusion changes are not confounded by incompatible checkpoint lineage.",
+    "Keep shared-POD rank 20, stored 50 Hz high-pass spatial mean, native-lag velocity state, 5% training trim, TCN channels 64, kernel size 3, constant full-covariance diffusion, energy-score particles 4 per horizon, batch-level 0.005 window sampling, batch size 256, seed 0, and five epochs fixed unless the advisor gives a specific matched reason to change one item.",
+    "Use horizons 2,4,10,20 as the reference. The short-horizon ablation removes only horizon 20. Do not infer a horizon effect from a candidate that also changes score weight, context, or drift structure.",
+    "Use the zero-orthogonality TCN15 full-diffusion run as the reference: its 5000-step trimmed energy ratio was 1.601, covariance trace ratio 1.472, and POD-mean standardized RMSE 0.268. Orthogonality weights 10 and 100 worsened rollout statistics, so do not train more orthogonality candidates.",
+    "TCN31 diagonal-diffusion weight 0.03 reached energy 1.691 and covariance 1.633; weights 0.1 and 0.3 were worse. This motivates the matched weight 0.01 test rather than stronger weights first.",
+    "The restoring-only branch means damped_residual with --no-structured-damping; the residual remains a TCN. The unstructured branch means drift_type mlp with residual_architecture tcn, so the TCN is the entire drift. The SPSD branch retains restoring and damping but replaces diagonal operators with full SPSD matrices.",
+    "Do not add endpoint moment objectives until a candidate improves both energy and covariance relative to the TCN15 full-diffusion reference. If one does, at most one final refinement may add stationary mean weight 0.01 at horizons 100,200,500.",
+    "Do not train MC-GMM, hybrid objectives, noisy-history models, more orthogonality variants, or untrimmed-data candidates in this bounded study.",
+    "Screen each candidate on 32 independent validation paths for 5000 steps, then run the held-out innovation diagnostic. Judge energy, covariance, POD mean, modal RMS, PSD, ACF, one-step NLL, innovation calibration, and survival separately.",
+    "Every training subprocess has a hard 2700-second limit. Never promote to a long confirmation in this 90-minute search; preserve time for matched rescue trials."
+  ],
+  "advisor_guidance": "Six matched rescue trials are queued first: TCN7, lower score weight 0.01, removal of horizon 20, restoring-only drift, unstructured TCN drift, and SPSD restoring+damping. After all six screens and innovation diagnostics, select at most one additional fresh matched interpolation around the best weight, context, horizon, or drift recipe. Stop if no candidate materially beats energy 1.601 and covariance 1.472 together. Never request confirmation, implementation, MC-GMM, orthogonality, noisy history, or untrimmed training.",
+  "budget": {
+    "max_training_trials": 7,
+    "max_confirmations": 0
+  },
+  "max_overrides_per_trial": 20,
+  "allowed_training_modes": ["fresh"],
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p20/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 15,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [1, 2, 4],
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 4, 10, 20],
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift", "diffusion"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stationary-mean-horizons": [100, 200, 500],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.00625,
+    "--stationary-mean-validation-seed": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--drift-type": [["mlp"], ["damped_residual"]],
+    "--damped-operator": [null, ["diagonal"], ["spsd"]],
+    "--no-structured-damping": [null, []],
+    "--tcn-context-frames": [[7], [15], [31]],
+    "--tcn-dilations": [[1, 2], [1, 2, 4], [1, 2, 4, 8]],
+    "--diffusion-type": [["diagonal"], ["full"]],
+    "--multistep-weight": [[0.01], [0.02], [0.03], [0.05], [0.1], [0.3]],
+    "--multistep-horizons": [[2, 4, 10], [2, 5, 10], [2, 4, 10, 20], [2, 5, 10, 20, 30]],
+    "--multistep-particle-counts": [[4, 4, 4], [4, 4, 4, 4], [4, 4, 4, 4, 4]],
+    "--multistep-window-fraction": [[0.005], [0.01], [0.025]],
+    "--multistep-gradient-groups": [["drift"], ["drift", "diffusion"]],
+    "--stationary-mean-weight": [[0], [0.01]],
+    "--stationary-mean-horizons": [[20, 50, 100], [100, 200, 500]],
+    "--stationary-mean-trajectories": [[32], [64]],
+    "--stationary-mean-batch-fraction": [[0.003125], [0.00625]],
+    "--learning-rate": [["0.0001"], ["0.0003"], ["0.001"]],
+    "--batch-size": [[128], [256]],
+    "--epochs": [[3], [5]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.35, 2.75],
+    "pod_covariance_trace_ratio_range": [0.35, 2.75]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 10000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 21814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "tcn15_full_w0p03_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_tcn15_full_energy_h20_w0p03_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_tcn15_full_energy_h20_w0p03_e5/rollout_5000_screen",
+      "hypothesis": "Current best short-context full-diffusion TCN reference.",
+      "change_family": "external_reference"
+    },
+    {
+      "id": "tcn31_diagonal_w0p03_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_tcn31_energy_h20_w0p03_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_tcn31_energy_h20_w0p03_e5/rollout_5000_screen",
+      "hypothesis": "Best context-31 diagonal-diffusion energy-score TCN reference.",
+      "change_family": "external_reference"
+    },
+    {
+      "id": "markov_mlp_w0p03_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_mlp_energy_h20_w0p03_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_mlp_energy_h20_w0p03_e5/rollout_5000_screen",
+      "hypothesis": "Successful no-extra-history structured MLP comparator.",
+      "change_family": "external_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_tcn7_full_h20_w0p03_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "temporal_context",
+      "hypothesis": "A seven-frame receptive field better matches the rapid 0p20 decorrelation and reduces long-history distribution shift.",
+      "expected_observation": "Energy and covariance both improve relative to the matched TCN15 reference while one-step and innovation behavior remain competitive.",
+      "overrides": [
+        {"flag": "--tcn-context-frames", "tokens": ["7"], "remove": false},
+        {"flag": "--tcn-dilations", "tokens": ["1", "2"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_h20_w0p01_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "energy_score_weight",
+      "hypothesis": "A lower energy-score weight avoids noisy auxiliary gradients while retaining enough closed-loop stabilization for 0p20.",
+      "expected_observation": "Energy and covariance interpolate toward one without degrading one-step NLL or innovation calibration.",
+      "overrides": [
+        {"flag": "--multistep-weight", "tokens": ["0.01"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_h10_w0p03_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "energy_score_horizon",
+      "hypothesis": "Removing horizon 20 retains more active trimmed windows and avoids forcing the rapidly decorrelating 0p20 process through a noisy long-horizon endpoint score.",
+      "expected_observation": "Energy and covariance improve without the conditional and spectral degradation associated with insufficient rollout control.",
+      "overrides": [
+        {"flag": "--multistep-horizons", "tokens": ["2", "4", "10"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["4", "4", "4"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_restoring_only_h20_w0p03_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "drift_structure",
+      "hypothesis": "Explicit damping competes with the history-aware TCN; retaining only explicit restoring force lets the TCN infer temporally appropriate damping from its sequence.",
+      "expected_observation": "The restoring-only TCN improves energy and covariance while remaining finite and preserving the TCN conditional advantage.",
+      "overrides": [
+        {"flag": "--no-structured-damping", "tokens": [], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_unstructured_h20_w0p03_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "drift_structure",
+      "hypothesis": "The explicit linear operators are unnecessary for rapidly decorrelating 0p20 dynamics and may compete with the TCN; using the TCN as the complete drift could improve autonomous calibration.",
+      "expected_observation": "The unstructured TCN remains finite and improves energy and covariance while preserving its one-step and innovation advantage.",
+      "overrides": [
+        {"flag": "--drift-type", "tokens": ["mlp"], "remove": false},
+        {"flag": "--damped-operator", "tokens": [], "remove": true}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_full_spsd_h20_w0p03_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_full_w0p03_reference",
+      "change_family": "drift_structure",
+      "hypothesis": "Full SPSD restoring and damping matrices capture cross-mode linear couplings that the diagonal structured core misses, leaving the TCN residual to model only nonlinear temporal effects.",
+      "expected_observation": "The SPSD core improves energy, covariance structure, and leading-mode amplitudes without destabilizing rollout or worsening conditional diagnostics.",
+      "overrides": [
+        {"flag": "--damped-operator", "tokens": ["spsd"], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

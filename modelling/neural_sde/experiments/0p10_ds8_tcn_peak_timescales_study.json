@@ -1,0 +1,646 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_ds8_tcn_peak_timescales_v1",
+  "training_timeout_seconds": 21600,
+  "scientific_goal": "Test whether a downsampled TCN neural SDE recovers resonance peaks when its memory and joint-state training horizons cover tens of milliseconds, while preserving broadband and stationary calibration.",
+  "scientific_constraints": [
+    "Fixed primary 2x2: A=context63/short, B=context511/short, C=context63/long, D=context511/long. Complete all available declared arms before discretionary tuning. A and C share pretrain_c63_s0; B and D share pretrain_c511_s0. Both parents train fresh for20 one-step epochs at lr1e-3, seed0. Four branches use3 initial refinement epochs at lr1e-5; three epochs are a screen, not proof of convergence.",
+    "Preserve factor8 anti-alias preparation, edge trim32, HP50 spatial mean, rank20, zero increment trimming, prepared lag1, diagonal structured damping/stiffness and diagonal diffusion. Optimize train reps1-12; validation13/14 for evaluation and selection only; never evaluate or tune on test15/16.",
+    "Short context63 with kernel3 dilations1,2,4,8,16 spans4.306ms. Long context511 uses dilations1,2,4,8,16,32,64,128 and spans35.417ms. Longer context adds three convolutional blocks; this is not a parameter-count-matched history-only experiment. Data boundary eligibility also differs by context/horizon; quantify counts before causal claims.",
+    "Short score horizons2,5,10,20 (max1.389ms); long20,64,128,256,512 (max35.556ms). All four use normalized joint displacement/velocity score with block weights1/1, uniform within-schedule horizon weights, M8, score weight1, examples fraction0.03125, gradients to drift and diffusion, and unchanged mean0.03/variance0.001 penalties at20,50,100. The old velocity-only model is historical evidence, not an exact factorial control.",
+    "Every passing checkpoint gets a fixed TRAIN-split gradient audit at all five long horizons with min-history511, windows4, two start seeds and two particle seeds. Compare expected weighted gradient norms, per-horizon gradients and noise; audit settings differ from short-arm training. Do not compare loss magnitudes as gradient magnitudes. Never use validation gradients for parameter updates or weight calibration.",
+    "Prior runs/adaptive/neural_sde_0p10_ds8_long_joint_es trained h20,100,200 joint-score weight0.3,1,3,10 and a larger-fraction arm, all context63. Its advisor later hit usage limits. Read the imported prior evidence rather than claiming h200 was never trained. Those arms use different block/horizon weights and one epoch; do not call them matched controls for this study.",
+    "Screens:6250 coarse steps, 5 conditions x5 paths, common seed and nperseg2048; discard first512 generated and corresponding reference samples in plots/metrics. Confirmations:11500 coarse steps, same discard, nperseg4096 and independent seed. 12000 coarse steps plus511 history exceed the prepared record length. Starts may differ across context because evaluator eligibility differs; saved origins must be reported, and overlapping windows are not independent repetitions.",
+    "Assess center, spatial mean, and leading POD PSD; reference-selected peak contrasts and extra/spurious peaks, width and location, 100-1500Hz band power, energy, covariance and lagged correlations. A smooth PSD with unit variance is not a success. No clipping or removal of bad generated paths. Screen gates are rejection bounds, not scientific success targets.",
+    "Retain the existing checkpoint-selection convention and report which epoch best.pt selected versus latest.pt. Falling per-horizon scores at the end of3 epochs mean unfinished optimization. Prefer equal additional epochs for compared arms; do not infer failure from one unfinished refinement. No direct spectral or new lag-covariance training objective in the initial factorial.",
+    "After the initial factorial, use up to six bounded continuation/retry/replication jobs. Change only one conceptual setting family per comparison. Keep parent lineage explicit. Prioritize stable long-context/long-horizon continuation and matched controls, then a fresh seed1 replication only if a result is promising. Do not silently replace the core recipes after failures. No new model-code changes through advisor.",
+    "At most12 training jobs including2 pretrains and4 primary arms; at most2 confirmations. Preserve old studies/source HDF5. If advisor quota fails, completed queued tests remain durable; report failure rather than an active campaign or completed scientific conclusion."
+  ],
+  "advisor_guidance": "The user explicitly requested this unattended context/horizon test. Fixed parents and four branches are queued with dependencies; do not skip them for a generic hyperparameter search. Use at most six subsequent jobs for evidence-based convergence, matched weight/fraction adjustments, or replication. Initial ES coefficient1 is supported by a small train-only preflight, not claimed optimal. Read README.md and prior_evidence.json in the output root first. Keep advisor analysis compact: use existing summaries and figures rather than broad repository searches or replaying all histories; old advisor exhausted its usage budget. Do not rerun already completed h200 studies. If learning remains active, continue equal-budget arms before drawing conclusions. Existing peak metric scores the center; inspect spatial mean and modal plots as well. A failure of this bounded study does not prove TCN impossibility.",
+  "budget": {
+    "max_training_trials": 12,
+    "max_confirmations": 2
+  },
+  "max_overrides_per_trial": 10,
+  "allowed_training_modes": [
+    "fresh",
+    "finetune"
+  ],
+  "defer_initial_trial_dependencies": true,
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p10/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [
+      13,
+      14
+    ],
+    "--test-reps": [
+      15,
+      16
+    ],
+    "--spatial-mean-highpass-hz": 50,
+    "--downsample-factor": 8,
+    "--downsample-edge-trim": 32,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [
+      1
+    ],
+    "--hidden-layers": [
+      64,
+      64
+    ],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--diffusion-type": "diagonal",
+    "--diffusion-init": 0.1,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 63,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "--train-mode": "joint",
+    "--train-trim-percent": 0,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-weight": 1.0,
+    "--multistep-horizons": [
+      2,
+      5,
+      10,
+      20
+    ],
+    "--multistep-horizon-weights": [
+      0.25,
+      0.25,
+      0.25,
+      0.25
+    ],
+    "--multistep-position-weight": 1.0,
+    "--multistep-velocity-weight": 1.0,
+    "--multistep-particle-counts": [
+      8,
+      8,
+      8,
+      8
+    ],
+    "--multistep-window-fraction": 0.03125,
+    "--multistep-window-sampling": "examples",
+    "--multistep-gradient-groups": [
+      "drift",
+      "diffusion"
+    ],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0.03,
+    "--stationary-variance-weight": 0.001,
+    "--stationary-mean-horizons": [
+      20,
+      50,
+      100
+    ],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.0125,
+    "--stationary-mean-validation-seed": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--learning-rate": 1e-05,
+    "--batch-size": 128,
+    "--epochs": 3,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--tcn-context-frames": [
+      [
+        63
+      ],
+      [
+        511
+      ]
+    ],
+    "--tcn-dilations": [
+      [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128
+      ]
+    ],
+    "--multistep-weight": [
+      [
+        0
+      ],
+      [
+        0.1
+      ],
+      [
+        0.3
+      ],
+      [
+        1.0
+      ],
+      [
+        3.0
+      ]
+    ],
+    "--multistep-horizons": [
+      [
+        2,
+        5,
+        10,
+        20
+      ],
+      [
+        20,
+        64,
+        128,
+        256,
+        512
+      ]
+    ],
+    "--multistep-horizon-weights": [
+      [
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      [
+        0.2,
+        0.2,
+        0.2,
+        0.2,
+        0.2
+      ]
+    ],
+    "--multistep-particle-counts": [
+      [
+        8,
+        8,
+        8,
+        8
+      ],
+      [
+        8,
+        8,
+        8,
+        8,
+        8
+      ],
+      [
+        16,
+        16,
+        16,
+        16
+      ],
+      [
+        16,
+        16,
+        16,
+        16,
+        16
+      ]
+    ],
+    "--multistep-window-fraction": [
+      [
+        0.015625
+      ],
+      [
+        0.03125
+      ],
+      [
+        0.0625
+      ]
+    ],
+    "--stationary-mean-weight": [
+      [
+        0
+      ],
+      [
+        0.03
+      ]
+    ],
+    "--stationary-variance-weight": [
+      [
+        0
+      ],
+      [
+        0.001
+      ]
+    ],
+    "--epochs": [
+      [
+        1
+      ],
+      [
+        3
+      ],
+      [
+        5
+      ],
+      [
+        20
+      ]
+    ],
+    "--learning-rate": [
+      [
+        0.001
+      ],
+      [
+        1e-05
+      ],
+      [
+        3e-06
+      ],
+      [
+        "1e-5"
+      ],
+      [
+        "3e-6"
+      ]
+    ],
+    "--seed": [
+      [
+        0
+      ],
+      [
+        1
+      ]
+    ],
+    "--batch-size": [
+      [
+        64
+      ],
+      [
+        128
+      ]
+    ]
+  },
+  "screen_seed_runs": false,
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [
+      0.35,
+      4
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.35,
+      4
+    ]
+  },
+  "initial_trials": [
+    {
+      "id": "pretrain_c511_s0",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "change_family": "one_step_pretraining",
+      "hypothesis": "Matched one-step preparation for context 511; same 20 epochs, seed, optimizer and source data.",
+      "expected_observation": "Provides a frozen parent for both short and long horizon branches; rollout calibration is measured separately.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--stationary-mean-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--stationary-variance-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--epochs",
+          "tokens": [
+            "20"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--learning-rate",
+          "tokens": [
+            "0.001"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--tcn-context-frames",
+          "tokens": [
+            "511"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--tcn-dilations",
+          "tokens": [
+            "1",
+            "2",
+            "4",
+            "8",
+            "16",
+            "32",
+            "64",
+            "128"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "pretrain_c63_s0",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "change_family": "one_step_pretraining",
+      "hypothesis": "Matched one-step preparation for context 63; same 20 epochs, seed, optimizer and source data.",
+      "expected_observation": "Provides a frozen parent for both short and long horizon branches; rollout calibration is measured separately.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--stationary-mean-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--stationary-variance-weight",
+          "tokens": [
+            "0"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--epochs",
+          "tokens": [
+            "20"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--learning-rate",
+          "tokens": [
+            "0.001"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "d_c511_long_s0",
+      "training_mode": "finetune",
+      "parent_trial": "pretrain_c511_s0",
+      "change_family": "context_horizon_factorial",
+      "hypothesis": "Context 511, 35.6 ms joint endpoint score; distinguish memory and training timescale effects.",
+      "expected_observation": "Measure autonomous resonance contrast/width, PSD, energy and covariance; no assumed improvement.",
+      "overrides": [
+        {
+          "flag": "--multistep-horizons",
+          "tokens": [
+            "20",
+            "64",
+            "128",
+            "256",
+            "512"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--multistep-horizon-weights",
+          "tokens": [
+            "0.2",
+            "0.2",
+            "0.2",
+            "0.2",
+            "0.2"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--multistep-particle-counts",
+          "tokens": [
+            "8",
+            "8",
+            "8",
+            "8",
+            "8"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "a_c63_short_s0",
+      "training_mode": "finetune",
+      "parent_trial": "pretrain_c63_s0",
+      "change_family": "context_horizon_factorial",
+      "hypothesis": "Context 63, 1.39 ms joint endpoint score; distinguish memory and training timescale effects.",
+      "expected_observation": "Measure autonomous resonance contrast/width, PSD, energy and covariance; no assumed improvement.",
+      "overrides": []
+    },
+    {
+      "id": "b_c511_short_s0",
+      "training_mode": "finetune",
+      "parent_trial": "pretrain_c511_s0",
+      "change_family": "context_horizon_factorial",
+      "hypothesis": "Context 511, 1.39 ms joint endpoint score; distinguish memory and training timescale effects.",
+      "expected_observation": "Measure autonomous resonance contrast/width, PSD, energy and covariance; no assumed improvement.",
+      "overrides": []
+    },
+    {
+      "id": "c_c63_long_s0",
+      "training_mode": "finetune",
+      "parent_trial": "pretrain_c63_s0",
+      "change_family": "context_horizon_factorial",
+      "hypothesis": "Context 63, 35.6 ms joint endpoint score; distinguish memory and training timescale effects.",
+      "expected_observation": "Measure autonomous resonance contrast/width, PSD, energy and covariance; no assumed improvement.",
+      "overrides": [
+        {
+          "flag": "--multistep-horizons",
+          "tokens": [
+            "20",
+            "64",
+            "128",
+            "256",
+            "512"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--multistep-horizon-weights",
+          "tokens": [
+            "0.2",
+            "0.2",
+            "0.2",
+            "0.2",
+            "0.2"
+          ],
+          "remove": false
+        },
+        {
+          "flag": "--multistep-particle-counts",
+          "tokens": [
+            "8",
+            "8",
+            "8",
+            "8",
+            "8"
+          ],
+          "remove": false
+        }
+      ]
+    }
+  ],
+  "seed_runs": [],
+  "advisor": {
+    "mode": "codex",
+    "command": "/home/jonas/.vscode-server/extensions/openai.chatgpt-26.903.61454-linux-x64/bin/linux-x86_64/codex",
+    "model": null
+  },
+  "objective_balance_diagnostic": {
+    "split": "train",
+    "device": "cuda",
+    "windows": 4,
+    "moment_trajectories": 8,
+    "moment_horizons": [
+      20,
+      50,
+      100
+    ],
+    "window_seed": 61026,
+    "window_seeds": [
+      61026,
+      61027
+    ],
+    "seeds": [
+      71026,
+      71027
+    ],
+    "min_history": 511,
+    "timeout_seconds": 1800,
+    "output_name": "train_gradient_h512_m8",
+    "multistep_objective": "energy_score",
+    "multistep_target": "joint",
+    "multistep_horizons": [
+      20,
+      64,
+      128,
+      256,
+      512
+    ],
+    "multistep_horizon_weights": [
+      0.2,
+      0.2,
+      0.2,
+      0.2,
+      0.2
+    ],
+    "multistep_particle_counts": [
+      8,
+      8,
+      8,
+      8,
+      8
+    ],
+    "multistep_position_weight": 1,
+    "multistep_velocity_weight": 1,
+    "multistep_weight": 1,
+    "multistep_fraction": 0.03125,
+    "multistep_gradient_groups": [
+      "drift",
+      "diffusion"
+    ],
+    "mean_weight": 0.03,
+    "variance_weight": 0.001,
+    "moment_fraction": 0.0125
+  },
+  "screen": {
+    "horizon": 6250,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "batch_size": 5,
+    "device": "cuda",
+    "seed": 82626,
+    "nperseg": 2048,
+    "peak_nperseg": 2048,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      20
+    ],
+    "discard": 512
+  },
+  "confirmation": {
+    "horizon": 11500,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "batch_size": 5,
+    "device": "cuda",
+    "seed": 92626,
+    "nperseg": 4096,
+    "peak_nperseg": 4096,
+    "peak_band": [
+      100,
+      1500
+    ],
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      20
+    ],
+    "discard": 512
+  }
+}

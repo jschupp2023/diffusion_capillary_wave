@@ -19,7 +19,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import EDMConfig, TrainConfig, RUNTIME_OPTIONS
 from .diagnostics import TrainingDiagnostics
-from .data import NormalizationStats, checkpoint_data, fit_normalization, transition_batches
+from .data import (NormalizationStats, checkpoint_data, fit_normalization,
+                   fit_trimmed_normalization, transition_batches)
 from modelling.data_preparation.prepare_shared_pod_training import SharedPODTrainingData
 from modelling.data_preparation.shared_pod_basis import DEFAULT_DATA_ROOT
 from .model import ConditionalEDM
@@ -214,6 +215,8 @@ def train(
         raise ValueError("A training/validation repetition is too short for the selected history and lag.")
     if model_config.param_dim:
         raise ValueError("Single-experiment training requires param_dim=0.")
+    if train_config.train_trim_percent and normalization_from_checkpoint is not None:
+        raise ValueError("Training trim cannot reuse normalization from another checkpoint.")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
@@ -226,6 +229,10 @@ def train(
     if resume is None:
         stats = (_pod_only_normalization(Path(normalization_from_checkpoint), data, model_config, data_signature)
                  if normalization_from_checkpoint is not None else fit_normalization(data, model_config))
+        trim_report = {}
+        if train_config.train_trim_percent:
+            stats, trim_report = fit_trimmed_normalization(
+                data, model_config, train_config.train_trim_percent, stats)
         model = ConditionalEDM(model_config)
         model.set_normalization(stats)
         start_epoch = 0
@@ -251,6 +258,23 @@ def train(
         global_step = int(checkpoint["global_step"])
         best_validation_loss = float(checkpoint["best_validation_loss"])
         history = list(checkpoint["history"])
+        trim_report = {
+            key: value for key, value in checkpoint.get("training", {}).items()
+            if key.startswith(("train_trim_", "validation_trim_", "normalization_"))
+        }
+
+    trim_cutoff = trim_report.get("train_trim_norm_cutoff")
+    trim_state_std = trim_report.get("train_trim_state_std")
+    if train_config.train_trim_percent and (trim_cutoff is None or trim_state_std is None):
+        raise ValueError("Training-trimmed checkpoint is missing its cutoff or preliminary state scale.")
+    if trim_cutoff is not None:
+        print(
+            f"Training increment trim: removed {trim_report['train_trim_removed_count']:,}/"
+            f"{trim_report['train_trim_increment_count']:,} native increments "
+            f"({trim_report['train_trim_removed_percent']:.3g}%), cutoff={trim_cutoff:.6g}; "
+            f"retained {trim_report['normalization_retained_transition_count']:,} training stencils",
+            flush=True,
+        )
 
     model.to(device)
     optimizer = AdamW(
@@ -279,10 +303,12 @@ def train(
         if old_best != new_best and old_best.exists() and not new_best.exists():
             shutil.copy2(old_best, new_best)
 
+    training_metadata = train_config.to_dict()
+    training_metadata.update(trim_report)
     metadata = {
         "data": data.source_config,
         "model": model_config.to_dict(),
-        "training": train_config.to_dict(),
+        "training": training_metadata,
         "split_labels": {k: list(v) for k, v in data.splits.items()},
         "device": str(device),
         "coordinate_cache": cache_info,
@@ -303,14 +329,16 @@ def train(
         train_metrics, train_batches = run_epoch(
             model,
             transition_batches(data, model_config, "train", train_config.batch_size,
-                               seed=train_config.seed + epoch),
+                               seed=train_config.seed + epoch,
+                               trim_cutoff=trim_cutoff, trim_state_std=trim_state_std),
             device=device,
             optimizer=optimizer,
             max_batches=train_config.max_train_batches,
         )
         validation_metrics, _ = run_epoch(
             model,
-            transition_batches(data, model_config, "validation", train_config.batch_size),
+            transition_batches(data, model_config, "validation", train_config.batch_size,
+                               trim_cutoff=trim_cutoff, trim_state_std=trim_state_std),
             device=device,
             max_batches=train_config.max_validation_batches,
         )
@@ -353,6 +381,7 @@ def train(
             "format_version": 2,
             "model_config": model_config.to_dict(),
             "train_config": train_config.to_dict(),
+            "training": training_metadata,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": None if scheduler is None else scheduler.state_dict(),
@@ -388,6 +417,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="For a POD-only run, reuse matching training-only scales from a mean-inclusive checkpoint.")
     parser.add_argument("--data-root", type=Path)
     parser.add_argument("--shared-basis", type=Path)
+    parser.add_argument("--spatial-mean-highpass-hz", type=float,
+                        help="Use a stored high-pass spatial-mean trajectory at this cutoff.")
     parser.add_argument("--validation-reps", type=int, nargs="+", help="Passed to data preparation.")
     parser.add_argument("--test-reps", type=int, nargs="*", help="Passed to data preparation; empty disables test split.")
     parser.add_argument("--output", type=Path, default=None, help="run directory")
@@ -452,6 +483,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--epochs", type=int, default=None, help="total epochs; default 20")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--train-trim-percent", type=float, default=0.,
+                        help="Exclude transition stencils containing the largest training native-increment norms.")
     parser.add_argument("--max-train-batches", type=int, default=None)
     parser.add_argument("--max-validation-batches", type=int, default=None)
     parser.add_argument("--cache-gib", type=float, help="RAM cache cap, default 2 GiB; 0 streams. Also capped at 25%% of available RAM.")
@@ -488,7 +521,8 @@ def main(argv: list[str] | None = None) -> None:
                                     data_root=args.data_root or DEFAULT_DATA_ROOT,
                                     shared_basis=args.shared_basis,
                                     validation_reps=args.validation_reps, test_reps=args.test_reps,
-                                    include_spatial_mean=not args.no_spatial_mean)
+                                    include_spatial_mean=not args.no_spatial_mean,
+                                    spatial_mean_highpass_hz=args.spatial_mean_highpass_hz)
         if args.no_spatial_mean:
             runtime.setdefault("rollout_every", 0)
         model_config = EDMConfig(
@@ -524,6 +558,7 @@ def main(argv: list[str] | None = None) -> None:
             weight_decay=args.weight_decay,
             epochs=20 if args.epochs is None else args.epochs,
             seed=args.seed,
+            train_trim_percent=args.train_trim_percent,
             max_train_batches=args.max_train_batches,
             max_validation_batches=args.max_validation_batches,
         )

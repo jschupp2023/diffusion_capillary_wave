@@ -1,1 +1,1 @@
-"""Neural SDE baseline with optional multistep velocity/displacement likelihood."""
+"""Neural SDE baseline with optional multistep likelihood or energy score."""

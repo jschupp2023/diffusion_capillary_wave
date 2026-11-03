@@ -1,0 +1,385 @@
+"""Run data cleaning and high-pass filtering sequentially over the experiment tree.
+
+Expected input layout::
+
+    INPUT_ROOT/
+      0p20/
+        Ca_ac_0p001660_rep1/
+          11272025_c_0.2vpp_data_roi-none_cal-true.hdf5
+
+The same relative directory structure is created below ``--output-root``::
+
+    OUTPUT_ROOT/
+      0p20/
+        Ca_ac_0p001660_rep1/
+          11272025_c_0.2vpp_data_roi-none_cal-true_cleaned_hp50hz.hdf5
+
+Example
+-------
+    # 1. Dry run to inspect discovered files:
+    python data_analysis/run_clean_dataset_batch.py --powers 0p20 --dry-run
+
+    # 2. Pilot test on just the first file:
+    python data_analysis/run_clean_dataset_batch.py --powers 0p20 --max-files 1
+
+    # 3. Full unattended batch run on all 0p20 files:
+    python data_analysis/run_clean_dataset_batch.py --powers 0p20 --workers 8
+"""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+import traceback
+from typing import TextIO
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from data_analysis.export_cleaned_dataset import export_cleaned_dataset
+from data_analysis.temporal_alignment import DEFAULT_Q, DEFAULT_TAU
+
+DEFAULT_INPUT_ROOT = Path("/disk/hyk049/DHM_new_experiment")
+DEFAULT_OUTPUT_ROOT = Path("/disk/hyk049/jschupp/cleaned_experiment")
+CONDITION_PATTERN = re.compile(r"0p\d{1,2}")
+REALIZATION_PATTERN = re.compile(r"Ca_ac.*")
+HDF5_SUFFIXES = {".h5", ".hdf5"}
+
+
+@dataclass(frozen=True)
+class CleanJob:
+    condition: str
+    realization: str
+    input_path: Path
+    output_path: Path
+
+
+@dataclass(frozen=True)
+class DiscoveryIssue:
+    directory: Path
+    reason: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        default=DEFAULT_INPUT_ROOT,
+        help=f"Input tree root (default: {DEFAULT_INPUT_ROOT}).",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+        help=f"Root of the mirrored output tree (default: {DEFAULT_OUTPUT_ROOT}).",
+    )
+    parser.add_argument(
+        "--powers",
+        nargs="+",
+        help="Only these condition directories (e.g. --powers 0p20 or --powers 0p08 0p20).",
+    )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        nargs="+",
+        help="Only these repetition numbers within every selected power.",
+    )
+    parser.add_argument(
+        "--q",
+        type=float,
+        default=DEFAULT_Q,
+        help=f"Optical cycle height in microns (default: {DEFAULT_Q}).",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=DEFAULT_TAU,
+        help=f"Spatial unwrapping threshold in microns (default: {DEFAULT_TAU}).",
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="integer",
+        choices=["integer", "poisson"],
+        help="Spatial restoration method (default: integer).",
+    )
+    parser.add_argument(
+        "--no-temporal-align",
+        dest="temporal_align",
+        action="store_false",
+        help="Disable temporal alignment.",
+    )
+    parser.add_argument(
+        "--no-highpass-50hz",
+        dest="apply_highpass_50hz",
+        action="store_false",
+        help="Disable 50 Hz Butterworth high-pass filter.",
+    )
+    parser.add_argument(
+        "--highpass-cutoff-hz",
+        type=float,
+        default=50.0,
+        help="High-pass filter cutoff frequency in Hz (default: 50.0).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Worker processes per file for spatial restoration (default: 8).",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=500,
+        help="Frame chunk size for spatial worker pool (default: 500).",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        help="Run only the first N valid inputs; useful for pilot testing.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        help="Subsample only the first M frames of each recording (for quick testing).",
+    )
+    parser.add_argument(
+        "--scratch-dir",
+        type=Path,
+        help="Directory for temporary memory maps.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing cleaned outputs; otherwise they are skipped.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Discover and print jobs without running the cleaner.",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="Combined log path (default: timestamped file in output root).",
+    )
+    return parser.parse_args()
+
+
+def discover_jobs(
+    input_root: Path,
+    output_root: Path,
+    powers: list[str] | None = None,
+    reps: list[int] | None = None,
+) -> tuple[list[CleanJob], list[DiscoveryIssue]]:
+    """Discover valid inputs using the expected two-level directory layout."""
+    jobs: list[CleanJob] = []
+    issues: list[DiscoveryIssue] = []
+
+    if not input_root.exists():
+        issues.append(DiscoveryIssue(directory=input_root, reason="input root does not exist"))
+        return jobs, issues
+
+    condition_directories = sorted(
+        path
+        for path in input_root.iterdir()
+        if path.is_dir() and CONDITION_PATTERN.fullmatch(path.name)
+    )
+
+    if powers:
+        condition_directories = [p for p in condition_directories if p.name in powers]
+
+    for condition_directory in condition_directories:
+        realization_directories = sorted(
+            path
+            for path in condition_directory.iterdir()
+            if path.is_dir() and REALIZATION_PATTERN.fullmatch(path.name)
+        )
+        if reps:
+            rep_patterns = tuple(f"_rep{r}" for r in reps)
+            realization_directories = [
+                p for p in realization_directories if any(p.name.endswith(pat) or pat in p.name for pat in rep_patterns)
+            ]
+
+        for realization_directory in realization_directories:
+            input_files = sorted(
+                path
+                for path in realization_directory.iterdir()
+                if path.is_file() and path.suffix.lower() in HDF5_SUFFIXES
+            )
+            if len(input_files) != 1:
+                issues.append(
+                    DiscoveryIssue(
+                        directory=realization_directory,
+                        reason=(
+                            "expected exactly one direct .h5/.hdf5 file; "
+                            f"found {len(input_files)}"
+                        ),
+                    )
+                )
+                continue
+
+            input_path = input_files[0]
+            relative_directory = realization_directory.relative_to(input_root)
+            output_filename = f"{input_path.stem}_cleaned_hp50hz.hdf5"
+            output_path = output_root / relative_directory / output_filename
+
+            jobs.append(
+                CleanJob(
+                    condition=condition_directory.name,
+                    realization=realization_directory.name,
+                    input_path=input_path,
+                    output_path=output_path,
+                )
+            )
+
+    return jobs, issues
+
+
+def announce(log: TextIO, message: str) -> None:
+    """Write a timestamped message to both stdout and the log file."""
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    line = f"[{timestamp}] {message}"
+    print(line, flush=True)
+    log.write(line + "\n")
+    log.flush()
+
+
+def main() -> None:
+    args = parse_args()
+    args.output_root.mkdir(parents=True, exist_ok=True)
+
+    if args.log_file is None:
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.log_file = args.output_root / f"batch_clean_{timestamp_str}.log"
+
+    jobs, issues = discover_jobs(
+        input_root=args.input_root,
+        output_root=args.output_root,
+        powers=args.powers,
+        reps=args.reps,
+    )
+
+    if args.max_files is not None and args.max_files > 0:
+        jobs = jobs[:args.max_files]
+
+    with open(args.log_file, "a", encoding="utf-8") as log:
+        announce(log, "=== Data Cleaning Batch Runner Initialized ===")
+        announce(log, f"Input Root:  {args.input_root}")
+        announce(log, f"Output Root: {args.output_root}")
+        announce(log, f"Selected Powers: {args.powers or 'ALL'}")
+        announce(log, f"Discovered Jobs: {len(jobs)}")
+        announce(log, f"Discovery Issues: {len(issues)}")
+
+        for issue in issues:
+            announce(log, f"  Issue: {issue.directory} -> {issue.reason}")
+
+        if args.dry_run:
+            announce(log, "\n--- DRY RUN: Planned Jobs ---")
+            for i, job in enumerate(jobs, start=1):
+                exists_tag = " [EXISTS - SKIPPED]" if job.output_path.exists() and not args.overwrite else ""
+                size_mb = job.input_path.stat().st_size / (1024.0**2) if job.input_path.exists() else 0
+                announce(log, f"[{i:3d}/{len(jobs):3d}] {job.condition}/{job.realization} ({size_mb:.1f} MB){exists_tag}")
+                announce(log, f"        In:  {job.input_path}")
+                announce(log, f"        Out: {job.output_path}")
+            announce(log, "\nDry run complete. No files were modified.")
+            return
+
+        # Execute jobs
+        succeeded = 0
+        skipped = 0
+        failed = 0
+        job_results = []
+
+        total_jobs = len(jobs)
+        batch_start = time.perf_counter()
+
+        for idx, job in enumerate(jobs, start=1):
+            announce(log, f"\n[{idx}/{total_jobs}] Processing {job.condition}/{job.realization}...")
+            announce(log, f"  Input:  {job.input_path}")
+            announce(log, f"  Output: {job.output_path}")
+
+            if job.output_path.exists() and not args.overwrite:
+                announce(log, "  Output already exists and --overwrite not set. Skipping.")
+                skipped += 1
+                job_results.append({
+                    "condition": job.condition,
+                    "realization": job.realization,
+                    "status": "SKIPPED",
+                    "output_path": str(job.output_path),
+                })
+                continue
+
+            job_start = time.perf_counter()
+            try:
+                export_cleaned_dataset(
+                    raw_input=job.input_path,
+                    output_file=job.output_path,
+                    q=args.q,
+                    tau=args.tau,
+                    method=args.method,
+                    temporal_align=args.temporal_align,
+                    apply_highpass_50hz=args.apply_highpass_50hz,
+                    highpass_cutoff_hz=args.highpass_cutoff_hz,
+                    workers=args.workers,
+                    chunk_size=args.chunk_size,
+                    scratch_dir=args.scratch_dir,
+                    max_frames=args.max_frames,
+                    overwrite=args.overwrite,
+                )
+                job_elapsed = time.perf_counter() - job_start
+                succeeded += 1
+                announce(log, f"  Job Succeeded in {job_elapsed:.1f} s.")
+                job_results.append({
+                    "condition": job.condition,
+                    "realization": job.realization,
+                    "status": "SUCCESS",
+                    "elapsed_sec": job_elapsed,
+                    "output_path": str(job.output_path),
+                })
+            except Exception as exc:
+                job_elapsed = time.perf_counter() - job_start
+                failed += 1
+                err_msg = f"{type(exc).__name__}: {exc}"
+                announce(log, f"  JOB FAILED after {job_elapsed:.1f} s: {err_msg}")
+                log.write(traceback.format_exc() + "\n")
+                log.flush()
+                job_results.append({
+                    "condition": job.condition,
+                    "realization": job.realization,
+                    "status": "FAILED",
+                    "error": err_msg,
+                    "elapsed_sec": job_elapsed,
+                    "input_path": str(job.input_path),
+                })
+
+        batch_elapsed = time.perf_counter() - batch_start
+        announce(log, "\n=== Batch Run Finished ===")
+        announce(log, f"Total Jobs: {total_jobs} | Succeeded: {succeeded} | Skipped: {skipped} | Failed: {failed}")
+        announce(log, f"Total Time: {batch_elapsed:.1f} s ({batch_elapsed/60.0:.1f} min)")
+
+        summary_file = args.output_root / f"batch_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        summary_file.write_text(json.dumps({
+            "total_jobs": total_jobs,
+            "succeeded": succeeded,
+            "skipped": skipped,
+            "failed": failed,
+            "total_elapsed_sec": batch_elapsed,
+            "jobs": job_results,
+        }, indent=2) + "\n")
+        announce(log, f"Batch summary saved to: {summary_file}")
+
+
+if __name__ == "__main__":
+    main()
+

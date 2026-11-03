@@ -196,6 +196,7 @@ def make_video(
     fps: int = 30,
     overwrite: bool = False,
     raw_input: Path | None = None,
+    remove_spatial_mean: bool = False,
 ) -> Path:
     if start < 0 or stop <= start:
         raise ValueError("Require 0 <= start < stop.")
@@ -207,7 +208,8 @@ def make_video(
         if max_frames > RAW_FRAME_LIMIT:
             raise ValueError(f"Raw videos are limited to {RAW_FRAME_LIMIT} rendered frames.")
         source = Path(raw_input).expanduser().resolve()
-        output = output or Path("videos") / f"raw_surface_{source.stem}_{start}_{stop}.mp4"
+        suffix = "_fluctuations" if remove_spatial_mean else ""
+        output = output or Path("videos") / f"raw_surface_{source.stem}_{start}_{stop}{suffix}.mp4"
     else:
         if not experiment or rep is None or rank is None or rep < 1 or rank < 1:
             raise ValueError("POD video requires experiment, rep >= 1, and rank >= 1.")
@@ -238,11 +240,15 @@ def make_video(
             frames = h5["main"]
             fields = np.empty((len(indices), len(yidx), len(xidx)), dtype=np.float32)
             for i, frame_number in enumerate(info.frame_numbers[relative]):
-                fields[i] = frames[_frame_key(frame_number)][::ystep, ::xstep]
+                frame_data = frames[_frame_key(frame_number)][::ystep, ::xstep].astype(np.float32)
+                if remove_spatial_mean:
+                    frame_data -= float(np.mean(frame_data))
+                fields[i] = frame_data
         x, y, times = info.x[xidx], info.y[yidx], info.time[relative]
         z_unit, x_unit, y_unit = info.units["z"], info.units["x"], info.units["y"]
-        title = lambda i: f"raw | timestep {indices[i]} | t = {times[i]:.6f} s"
-        description = "raw calibrated heights"
+        lbl = "fluctuations" if remove_spatial_mean else "raw"
+        title = lambda i: f"{lbl} | timestep {indices[i]} | t = {times[i]:.6f} s"
+        description = "calibrated surface fluctuations (spatial mean removed)" if remove_spatial_mean else "raw calibrated heights"
     else:
         with h5py.File(source, "r") as h5:
             modes_ds = h5["pod/modes"]
@@ -340,6 +346,11 @@ def main() -> None:
                         help="Sample this many timesteps at most (default: 300; raw limit: 1000)")
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--remove-spatial-mean",
+        action="store_true",
+        help="Subtract instantaneous frame spatial mean to isolate pure wave fluctuations (centers z at 0).",
+    )
     args = parser.parse_args()
     if args.raw_input is None and (args.experiment is None or args.rep is None or args.rank is None):
         parser.error("POD video requires --experiment, --rep, and --rank, or use --raw-input.")
@@ -350,6 +361,7 @@ def main() -> None:
         root=args.root, output=args.output, spatial_points=args.spatial_points,
         max_frames=args.max_frames, fps=args.fps, overwrite=args.overwrite,
         raw_input=args.raw_input,
+        remove_spatial_mean=args.remove_spatial_mean,
     )
 
 

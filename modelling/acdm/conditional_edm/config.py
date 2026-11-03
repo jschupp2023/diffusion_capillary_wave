@@ -136,6 +136,7 @@ class TrainConfig:
     weight_decay: float = 0.0
     epochs: int = 20
     seed: int = 0
+    train_trim_percent: float = 0.0
     max_train_batches: int | None = None
     max_validation_batches: int | None = None
     cache_gib: float = 2.0
@@ -156,6 +157,7 @@ class TrainConfig:
                 self.learning_rate,
                 self.min_learning_rate,
                 self.weight_decay,
+                self.train_trim_percent,
             )
         ):
             raise ValueError("all floating-point training settings must be finite")
@@ -163,6 +165,8 @@ class TrainConfig:
             raise ValueError("batch_size and epochs must be positive")
         if self.learning_rate <= 0 or self.weight_decay < 0:
             raise ValueError("invalid optimizer settings")
+        if not 0 <= self.train_trim_percent < 100:
+            raise ValueError("train_trim_percent must lie in [0, 100)")
         if self.lr_scheduler not in {"constant", "cosine"}:
             raise ValueError("lr_scheduler must be 'constant' or 'cosine'")
         if self.min_learning_rate < 0 or self.min_learning_rate > self.learning_rate:

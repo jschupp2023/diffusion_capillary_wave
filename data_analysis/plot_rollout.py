@@ -3,7 +3,7 @@
     python -m data_analysis.plot_rollout runs/0p20_r50_neural_sde/evaluation
 
 The input directory must contain rollout.npz and metrics.json. Plots are saved
-in its energy/, modal/, psd/, coordinates/, and quantitative/ subdirectories.
+in its energy/, modal/, psd/, psd_peaks/, coordinates/, and quantitative/ subdirectories.
 Pass --surface-video to additionally create a short side-by-side reference and
 generated shared-POD surface video.
 """
@@ -18,7 +18,12 @@ import numpy as np
 from data_analysis.energy.rollout_energy import analyze as plot_energy
 from data_analysis.energy.rollout_modal import analyze as plot_modal
 from data_analysis.pod.pod_surface_video import make_surface_comparison_video
+from data_analysis.psd.rollout_modal_psd import analyze as plot_modal_psd
 from data_analysis.psd.rollout_psd import analyze as plot_psd
+from data_analysis.psd.rollout_spectral_peaks import (
+    analyze as plot_spectral_peaks, include_in_quantitative_summary,
+    validate_settings as validate_peak_settings,
+)
 from data_analysis.rollout import Rollout, add_rollout_arguments, output_directory
 from data_analysis.rollout_metrics import analyze as quantitative_metrics
 
@@ -104,10 +109,20 @@ def main(argv=None):
     parser.add_argument("--modes", nargs="+", type=int, help="POD mode numbers to plot.")
     parser.add_argument("--point", nargs=2, type=int, metavar=("Y", "X"), help="PSD pixel; default grid center.")
     parser.add_argument("--nperseg", type=int, default=1024, help="Maximum Welch segment length.")
+    parser.add_argument("--peak-nperseg", type=int, default=8192,
+                        help="Independent Welch length for the spectral-peak diagnostic (default: 8192).")
+    parser.add_argument("--peak-band", nargs=2, type=float, default=(100., 1500.),
+                        metavar=("LOW", "HIGH"), help="Spectral-peak frequency band in Hz (default: 100 1500).")
+    parser.add_argument("--peak-prominence-db", type=float, default=2.,
+                        help="Minimum reference peak prominence in dB (default: 2).")
     parser.add_argument("--psd-lower-frequency", type=float, default=10.,
                         help="Requested lower frequency for log-band PSD metrics [Hz] (default: 10).")
     parser.add_argument("--bins-per-decade", type=int, choices=(1, 2), default=2,
                         help="Whole- or half-decade PSD metric bands (default: 2).")
+    parser.add_argument("--modal-psd", action="store_true",
+                        help="Also compare generated/reference Welch PSDs for individual POD modes.")
+    parser.add_argument("--modal-psd-modes", nargs="+", type=int,
+                        help="POD modes for --modal-psd; providing this option enables the diagnostic.")
     parser.add_argument("--exact", action="store_true", help="Also compute exact geometric capillary energy.")
     parser.add_argument("--surface-video", action="store_true",
                         help="Also render a side-by-side reference/generated surface MP4.")
@@ -120,7 +135,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     rollout = Rollout(args.rollout, shared_basis=args.shared_basis, discard=args.discard)
     root = Path(args.output) if args.output else rollout.path.parent
-    names = ["energy", "modal", "psd", "coordinates", "quantitative"]
+    names = ["energy", "modal", "psd", "psd_peaks", "coordinates", "quantitative"]
+    modal_psd_requested = args.modal_psd or args.modal_psd_modes is not None
+    if modal_psd_requested:
+        names.append("modal_psd")
     if args.surface_video:
         names.append("surface_video")
     outputs = {name: root / name for name in names}
@@ -133,8 +151,14 @@ def main(argv=None):
         raise ValueError("Condition or ensemble index is outside the rollout.")
     if args.modes and any(m < 1 or m > rollout.rank for m in args.modes):
         raise ValueError(f"POD modes must lie between 1 and {rollout.rank}.")
+    if (args.modal_psd_modes
+            and (any(m < 1 or m > rollout.rank for m in args.modal_psd_modes)
+                 or len(set(args.modal_psd_modes)) != len(args.modal_psd_modes))):
+        raise ValueError(
+            f"Modal PSD modes must be unique and lie between 1 and {rollout.rank}.")
     if args.nperseg < 4:
         raise ValueError("nperseg must be at least 4.")
+    validate_peak_settings(args.peak_nperseg, args.peak_band, args.peak_prominence_db, 40.)
     if args.video_steps < 1 or args.video_spatial_points < 3 or args.video_fps < 1:
         raise ValueError("Video steps/fps must be positive and spatial-points at least 3.")
     if args.psd_lower_frequency <= 0:
@@ -146,11 +170,22 @@ def main(argv=None):
     print(plot_modal(rollout, output=outputs["modal"], overwrite=args.overwrite))
     print(plot_psd(rollout, point=args.point, nperseg=args.nperseg,
                    output=outputs["psd"], overwrite=args.overwrite))
+    print(plot_spectral_peaks(
+        rollout, point=args.point, nperseg=args.peak_nperseg,
+        band=args.peak_band, prominence_db=args.peak_prominence_db,
+        output=outputs["psd_peaks"], overwrite=args.overwrite))
+    if modal_psd_requested:
+        print(plot_modal_psd(
+            rollout, modes=args.modal_psd_modes, nperseg=args.nperseg,
+            lower_frequency=args.psd_lower_frequency,
+            bins_per_decade=args.bins_per_decade,
+            output=outputs["modal_psd"], overwrite=args.overwrite))
     print(quantitative_metrics(
         rollout, point=args.point, nperseg=args.nperseg,
         psd_lower_frequency=args.psd_lower_frequency,
         bins_per_decade=args.bins_per_decade, output=outputs["quantitative"],
         overwrite=args.overwrite))
+    include_in_quantitative_summary(outputs["quantitative"], outputs["psd_peaks"])
     print(plot_coordinates(rollout, condition=args.condition, ensemble=args.ensemble,
                            modes=args.modes, output=outputs["coordinates"], overwrite=args.overwrite))
     if args.surface_video:

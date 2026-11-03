@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_tcn63_untrimmed_energy_score_fresh",
+  "training_timeout_seconds": 2700,
+  "scientific_goal": "Learn a structured TCN63 Neural-SDE entirely from the full untrimmed 0p10 training population, without loading any trimmed-data weights, and determine whether an economical conditional velocity energy score plus optional endpoint moment matching yields stable and statistically faithful autonomous rollouts.",
+  "scientific_constraints": [
+    "No trial in the fresh lineage may load the earlier trimmed checkpoint. The fresh one-step parent and direct energy-score arm start from random initialization with normalization fitted only to the untrimmed training population; fine-tunes may load only checkpoints created inside this study.",
+    "Use validation repetitions 13 and 14 for all tuning and selection. Test repetitions 15 and 16 remain locked.",
+    "Keep the rank-20 shared-POD data, stored 50 Hz high-pass spatial mean, native-lag velocity state, structured positive diagonal restoring plus damping drift, TCN63 residual and diagonal diffusion fixed.",
+    "The fresh one-step control establishes whether staged one-step pretraining is needed. The direct fresh energy arm tests energy-score training from random initialization; staged energy arms must use only the fresh untrimmed one-step parent.",
+    "Use the unbiased conditional velocity energy score in target-standardized coordinates with four independent paths per measured initial condition and no self-pairs. M=8 already produced a practically identical warm-started solution at twice the path cost, so do not increase the ensemble unless new evidence demands it.",
+    "Prefer batch-level multistep sampling at fraction 0.005: it evaluates full selected minibatches rarely, retaining roughly six thousand initial conditions per epoch while vectorizing TCN rollout work. Treat its inverse-frequency gradient variance separately from estimator quality.",
+    "Do not infer success from one-step NLL or finite trajectories alone. Compare energy, POD means and covariance, leading-mode amplitudes, PSD, ACF, innovation calibration and rollout survival against the untrimmed validation reference.",
+    "Moment matching is a second-stage calibration tool. First establish an energy-only result; then add mean and, only if justified, light variance matching. Report their weighted contributions and do not attribute energy-score effects to moments.",
+    "The declared direct and staged controls run before adaptive decisions. Later trials may vary energy weight, maximum horizon, moment weights, learning rate, batch sampling mode or diagonal-linear orthogonality only within the allowed alternatives.",
+    "Changing maximum energy horizon requires the matching particle-count schedule in the same decision. Horizon 50 is exploratory and must remain below the wall-clock cap.",
+    "Every individual training subprocess has a hard 2700-second wall-clock limit. A timeout is a failed economic model, its partial directory is retained, and it must not be continued.",
+    "Screen each checkpoint on 32 independent full-diffusion validation paths for 5000 steps. Reject nonfinite paths, peak POD standardized RMS above 10, absolute standardized coordinate above 50, energy outside [0.4,2.5] or covariance trace outside [0.4,2.5].",
+    "At most one candidate receives an independent 50000-step confirmation. Prefer the simplest and fastest candidate that matches the confirmed warm-started untrimmed models rather than maximizing auxiliary-objective complexity."
+  ],
+  "advisor_guidance": "The matched warm-start study found M=4 and M=8 energy-score arms nearly identical at weight 0.3: both had about 1.08 times untrimmed energy, 1.07 covariance trace, 0.12 covariance error and 0.10 decades POD-only center PSD error on the 10000-step screen. Therefore use M=4. This study asks a different question: whether those dynamics can be learned without any trimmed checkpoint. First compare the direct fresh energy arm with the staged fresh one-step then energy arm. A divergent one-step screen does not invalidate it as a fine-tuning parent if its checkpoint and local fit are finite. If staged energy training is promising, test combined mean matching before raising energy weight; add variance only for a diagnosed covariance/amplitude error. Batch-level sampling is selected for throughput, but an examples-sampling check is allowed if update variance appears problematic. Orthogonality is a late ablation, not a default explanation. Never exceed 45 minutes for a training subprocess.",
+  "budget": {
+    "max_training_trials": 8,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 8,
+  "allowed_training_modes": ["fresh", "finetune"],
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p10/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 63,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [1, 2, 4, 8, 16],
+    "--diffusion-type": "diagonal",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 0,
+    "--multistep-weight": 0.3,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5, 10, 20],
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stationary-mean-horizons": [20, 50, 100],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.00625,
+    "--stationary-mean-validation-seed": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--learning-rate": 0.00001,
+    "--batch-size": 128,
+    "--epochs": 1,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [[0], [0.03], [0.1], [0.3], [1.0]],
+    "--multistep-objective": [["gmm_nll"], ["energy_score"]],
+    "--multistep-horizons": [[2, 5, 10], [2, 5, 10, 20], [2, 5, 10, 20, 50]],
+    "--multistep-particle-counts": [[4, 4, 4], [8, 8, 8], [4, 4, 4, 4], [8, 8, 8, 8], [4, 4, 4, 4, 4], [8, 8, 8, 8, 8]],
+    "--multistep-window-fraction": [[0.0025], [0.005], [0.01]],
+    "--multistep-window-sampling": [["examples"], ["batches"]],
+    "--multistep-gradient-groups": [["drift"], ["drift", "diffusion"]],
+    "--stationary-mean-weight": [[0], [0.01], [0.03], [0.1]],
+    "--stationary-variance-weight": [[0], [0.0003], [0.001], [0.003]],
+    "--stationary-mean-horizons": [[20, 50], [20, 50, 100], [20, 50, 100, 200]],
+    "--stationary-mean-trajectories": [[32], [64]],
+    "--stationary-mean-batch-fraction": [[0.003125], [0.00625], [0.0125]],
+    "--diagonal-linear-orthogonality-weight": [[0], [1], [10], [100]],
+    "--learning-rate": [[0.000001], [0.000003], [0.00001], [0.00003], [0.0001], [0.0003], [0.001]],
+    "--batch-size": [[128], [256]],
+    "--epochs": [[1], [2], [3], [5]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.4, 2.5],
+    "pod_covariance_trace_ratio_range": [0.4, 2.5]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 8814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 9814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "warmstart_energy_m4_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p10_tcn63_untrimmed_energy_score/trials/energy_m4_w0p3_drift",
+      "rollout_dir": "runs/adaptive/neural_sde_0p10_tcn63_untrimmed_energy_score/trials/energy_m4_w0p3_drift/rollout_10000_screen",
+      "hypothesis": "External warm-started energy-score reference; used only for comparison and never as a training parent.",
+      "change_family": "external_warmstart_reference"
+    },
+    {
+      "id": "warmstart_gmm_variance_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p10_tcn63_untrimmed_structured/trials/untrimmed_variance_w0p001_lr1e6",
+      "rollout_dir": "runs/adaptive/neural_sde_0p10_tcn63_untrimmed_structured/trials/untrimmed_variance_w0p001_lr1e6/rollout_50000_confirmation",
+      "hypothesis": "External confirmed untrimmed MC-GMM plus variance reference; used only as a target level and never as a training parent.",
+      "change_family": "external_gmm_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_untrimmed_onestep_e5",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "change_family": "fresh_untrimmed_parent",
+      "hypothesis": "Five epochs of one-step joint training learn a well-calibrated local structured TCN model entirely from untrimmed data, supplying a fair parent for generated-history objectives.",
+      "expected_observation": "Good held-out one-step NLL and innovation behavior but potentially unstable or biased autonomous rollouts, which subsequent energy-score training should correct.",
+      "overrides": [
+        {"flag": "--multistep-weight", "tokens": ["0"], "remove": false},
+        {"flag": "--learning-rate", "tokens": ["0.001"], "remove": false},
+        {"flag": "--batch-size", "tokens": ["256"], "remove": false},
+        {"flag": "--epochs", "tokens": ["5"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_direct_energy_h10_w0p3_e3",
+      "training_mode": "fresh",
+      "parent_trial": "fresh_untrimmed_onestep_e5",
+      "change_family": "direct_fresh_energy_score",
+      "hypothesis": "A short-horizon energy score active from random initialization can learn local and closed-loop dynamics jointly without a separate one-step stage.",
+      "expected_observation": "Finite training below 45 minutes and a 5000-step rollout competitive with the staged arm; failure would support one-step pretraining as an optimization curriculum.",
+      "overrides": [
+        {"flag": "--multistep-horizons", "tokens": ["2", "5", "10"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["4", "4", "4"], "remove": false},
+        {"flag": "--learning-rate", "tokens": ["0.0003"], "remove": false},
+        {"flag": "--batch-size", "tokens": ["256"], "remove": false},
+        {"flag": "--epochs", "tokens": ["3"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_direct_gmm_h10_m8_w0p03_e3",
+      "training_mode": "fresh",
+      "parent_trial": "fresh_direct_energy_h10_w0p3_e3",
+      "change_family": "direct_fresh_gmm_control",
+      "hypothesis": "MC-GMM feedback active from random initialization stabilizes and calibrates the same fresh untrimmed TCN more effectively than the direct energy-score objective.",
+      "expected_observation": "A finite matched 5000-step screen with energy, means and covariance closer to the untrimmed reference than the direct fresh energy arm; otherwise the difficulty is not specific to the energy-score objective.",
+      "overrides": [
+        {"flag": "--multistep-objective", "tokens": ["gmm_nll"], "remove": false},
+        {"flag": "--multistep-weight", "tokens": ["0.03"], "remove": false},
+        {"flag": "--multistep-horizons", "tokens": ["2", "5", "10"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["8", "8", "8"], "remove": false},
+        {"flag": "--learning-rate", "tokens": ["0.0003"], "remove": false},
+        {"flag": "--batch-size", "tokens": ["256"], "remove": false},
+        {"flag": "--epochs", "tokens": ["3"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_staged_gmm_h10_m8_w0p03_e3",
+      "training_mode": "finetune",
+      "parent_trial": "fresh_untrimmed_onestep_e5",
+      "change_family": "staged_fresh_gmm_control",
+      "hypothesis": "MC-GMM fine-tuning of the identical fresh untrimmed one-step parent supplies stronger closed-loop distributional information than the staged energy score.",
+      "expected_observation": "Improved 5000-step energy and POD moments relative to fresh_staged_energy_h10_w0p3_e3 without sacrificing its finite survival or local conditional fit.",
+      "overrides": [
+        {"flag": "--multistep-objective", "tokens": ["gmm_nll"], "remove": false},
+        {"flag": "--multistep-weight", "tokens": ["0.03"], "remove": false},
+        {"flag": "--multistep-horizons", "tokens": ["2", "5", "10"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["8", "8", "8"], "remove": false},
+        {"flag": "--learning-rate", "tokens": ["0.0003"], "remove": false},
+        {"flag": "--batch-size", "tokens": ["256"], "remove": false},
+        {"flag": "--epochs", "tokens": ["3"], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

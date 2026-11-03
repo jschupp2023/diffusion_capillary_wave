@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_tcn63_rollout_followup",
+  "scientific_goal": "Continue the promising epoch-2 TCN63 velocity multistep model for exactly one additional warm-start epoch, then test the stronger velocity-weight variant without changing the architecture, particle count, or sampler.",
+  "scientific_constraints": [
+    "Use finetune mode only. Run the declared continuation first from tcn63_epoch2, then the queued velocity comparison arm from tcn63_parent. Source checkpoints and original study outputs must remain unchanged.",
+    "Keep the unstructured TCN architecture, dense 63-token context, 64 channels, native-lag velocity update, constant diagonal diffusion parameterization, rank 20, shared basis, 50 Hz high-pass spatial mean and saved 5 percent full-stencil training trim fixed. Fine-tuning must reuse the checkpoint normalization and saved cutoff. The more recent untrimmed structured models are not the baseline.",
+    "Selection uses validation repetitions 13 and 14 only. Test repetitions 15 and 16 remain locked.",
+    "Complete exactly two queued trials: one epoch of velocity weight0.03 warm-started from the successful epoch2, then the original three-epoch velocity weight0.1 arm from the original checkpoint. Existing CLI resets Adam and epoch numbering; this is weight continuation, not exact optimizer resume.",
+    "Keep one-step NLL active on all retained one-step examples. Additional multistep gradients go to drift only; ordinary one-step gradients still train drift and diffusion. No endpoint-moment, orthogonality or stability penalty is added in this study.",
+    "Score all 21 coordinates at every multistep horizon, including all 20 POD modes. Do not hide high-mode instability by reducing scored mode counts.",
+    "Use the fixed 1000-step validation screen with 8 conditions, 4 trajectories each, seed 814 and full-strength trained diffusion. Do not clip, trim, reject or rescale generated trajectories.",
+    "The hard screen gate requires every path finite, peak POD RMS in checkpoint position-standardized units <=10, maximum absolute standardized coordinate <=50, and energy and POD covariance-trace ratios within [0.25,4]. These broad limits permit further evaluation, not a scientific success claim. Inspect mean bias, modal amplitudes, late growth and PSD as well.",
+    "Only promote a passing screened candidate with preserved one-step prediction and acceptable innovation calibration/ACF. Confirmation uses independent seed 1814, 8 conditions, 4 trajectories, and 50000 native steps. A finite 1000-step rollout is not proof of long-term stability.",
+    "Training history is trim-enforced but long reference rollout windows are not. Report the quantitative summary's reference population. Never compare the 1000-step PSD directly with 50000-step frequency resolution or optimize untrimmed reference power blindly.",
+    "No additional adaptive training trials: the budget is exactly these two runs and at most two long confirmations. After their screens, promote promising passing candidates or stop/request review.",
+    "Noise augmentation remains explicitly disabled. Moment matching and TCN execution optimizations are future experiments, not authorized changes to this study.",
+    "The user cancelled displacement multistep training. Do not run or propose a displacement trial in this study."
+  ],
+  "advisor_guidance": "The preceding velocity weight0.03 trial was intentionally stopped after two epochs. Its best.pt is epoch2, validation one-step NLL19.505 versus original19.533. Manual validation50k used only2 conditions x2 paths at diffusion_scale1: all finite, peak standardizedPODRMS2.09, energy ratio1.18 against trimmed reference, covariance trace1.02, mean bias0.535. Treat this as promising but not a32-path independent confirmation. The one-step-only continuation diverged catastrophically. Preserve original and epoch2 checkpoints. Complete the queued1+3 epochs unchanged before advising. Use no more training beyond these2 trials; promote passing candidates within the2-confirmation budget or stop. All likelihoods still use32 particles over21 coordinates including20 POD modes; finite-particle accuracy is unverified and dimensionality alone does not prove failure. User wants to test behavior before optimizing or trying moment matching. Report sampler, trim and split caveats. The imported epoch2 manual50k is not a passing controller screen. Keep advisor decisions within the bounded study. Displacement training was explicitly cancelled by the user; do not run it.",
+  "budget": {
+    "max_training_trials": 2,
+    "max_confirmations": 2
+  },
+  "max_overrides_per_trial": 6,
+  "allowed_training_modes": [
+    "finetune"
+  ],
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [
+      2,
+      5,
+      10,
+      20
+    ],
+    "--multistep-particle-counts": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "--multistep-window-fraction": 0.025,
+    "--multistep-window-sampling": "examples",
+    "--multistep-gradient-groups": [
+      "drift"
+    ],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--stability-weight": 0,
+    "--learning-rate": 0.0001,
+    "--batch-size": 128,
+    "--epochs": 3,
+    "--seed": 0,
+    "--history-noise-weight": 0
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [
+      [
+        0.03
+      ],
+      [
+        0.1
+      ]
+    ],
+    "--multistep-target": [
+      [
+        "velocity"
+      ]
+    ],
+    "--epochs": [
+      [
+        1
+      ],
+      [
+        3
+      ]
+    ]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [
+      0.25,
+      4
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.25,
+      4
+    ]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_followup_n256"
+  },
+  "screen": {
+    "horizon": 1000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 814,
+    "nperseg": 512,
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 1814,
+    "nperseg": 1024,
+    "modal_psd_modes": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      10,
+      15,
+      20
+    ]
+  },
+  "seed_runs": [
+    {
+      "id": "tcn63_parent",
+      "run_dir": "runs/comparison/0p10_tcn63",
+      "rollout_dir": "runs/comparison/0p10_tcn63/rollout_500_validation",
+      "hypothesis": "The unstructured one-step TCN has improved conditional predictions but catastrophically inflated autonomous trajectories, even at 500 steps.",
+      "change_family": "seed_one_step_tcn"
+    },
+    {
+      "id": "tcn63_epoch2",
+      "run_dir": "runs/adaptive/neural_sde_0p10_tcn63_rollout/trials/velocity_h2_5_10_20_w0p03_e3",
+      "rollout_dir": "runs/adaptive/neural_sde_0p10_tcn63_rollout/trials/velocity_h2_5_10_20_w0p03_e3/50k",
+      "hypothesis": "Two-epoch multistep fine-tune retains local fit and survives a small four-path full-noise50k validation.",
+      "change_family": "successful_epoch2_seed"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "velocity_w0p03_epoch2_continue_e1",
+      "training_mode": "finetune",
+      "parent_trial": "tcn63_epoch2",
+      "change_family": "continuation",
+      "hypothesis": "One more warm-start epoch may improve modal statistics and mean bias while preserving stability.",
+      "expected_observation": "Passing32-path screen with preserved one-step NLL; compare with source epoch2 rather than assuming improvement.",
+      "overrides": [
+        {
+          "flag": "--epochs",
+          "tokens": [
+            "1"
+          ],
+          "remove": false
+        }
+      ]
+    },
+    {
+      "id": "velocity_h2_5_10_20_w0p1_e3",
+      "training_mode": "finetune",
+      "parent_trial": "tcn63_parent",
+      "change_family": "multistep_weight",
+      "hypothesis": "A stronger weight on the same generated paths improves recovery from excursions more than weight 0.03.",
+      "expected_observation": "A better stability screen without destroying variance or substantially degrading conditional fit.",
+      "overrides": [
+        {
+          "flag": "--multistep-weight",
+          "tokens": [
+            "0.1"
+          ],
+          "remove": false
+        }
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "action", "trial_name", "parent_trial", "training_mode", "hypothesis",
+    "change_family", "overrides", "expected_observation", "reason", "stop_reason",
+    "implementation_request"
+  ],
+  "properties": {
+    "action": {"type": "string", "enum": ["run", "promote", "stop", "request_implementation"]},
+    "trial_name": {"type": "string"},
+    "parent_trial": {"type": "string"},
+    "training_mode": {"type": "string", "enum": ["fresh", "finetune", "memory"]},
+    "hypothesis": {"type": "string"},
+    "change_family": {"type": "string"},
+    "overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flag", "tokens", "remove"],
+        "properties": {
+          "flag": {"type": "string"},
+          "tokens": {"type": "array", "items": {"type": "string"}},
+          "remove": {"type": "boolean"}
+        }
+      }
+    },
+    "expected_observation": {"type": "string"},
+    "reason": {"type": "string"},
+    "stop_reason": {"type": "string"},
+    "implementation_request": {"type": "string"}
+  }
+}

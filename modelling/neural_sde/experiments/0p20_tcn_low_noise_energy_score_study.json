@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn_low_noise_energy_score",
+  "training_timeout_seconds": 2700,
+  "scientific_goal": "Determine whether reducing full-batch and particle noise makes the best 5%-trimmed 0p20 restoring-only TCN energy-score model competitive with the successful Markov comparator.",
+  "scientific_constraints": [
+    "Tune only on validation repetitions 13 and 14; keep test repetitions 15 and 16 locked.",
+    "Train every candidate fresh from the same restoring-only TCN15 full-diffusion architecture, five-percent trim, seed, optimizer, horizon set, and five-epoch schedule.",
+    "Use the completed restoring-only TCN15 M4 fraction-0.005 run as the matched reference: 5000-step energy ratio 1.508, covariance trace ratio 1.411, and POD-mean standardized RMSE 0.241.",
+    "The frozen-gradient diagnostic found overall single-update noise-to-signal 0.478 at M4 and batch size 256. Batch selection contributed about 0.423, while diffusion particle noise was about 0.571. Therefore test batch fraction and particle count as separate matched factors before attributing any change to their combination.",
+    "The base energy-score weight remains 0.03. Batch sampling preserves its expectation by scaling selected losses by one over the fraction; fraction 0.02 therefore reduces the selected-update coefficient from 6.0 to 1.5.",
+    "Do not change TCN context, drift structure, diffusion family, trimming, horizon set, learning rate, batch size, or add moment, orthogonality, MC-GMM, or noisy-history objectives in the four initial trials.",
+    "The drift-only routing arm still rolls out stochastic full diffusion, but energy-score backward gradients update only drift; one-step NLL continues to train both drift and diffusion.",
+    "Screen every candidate on the same 32 validation trajectories for 5000 steps and run the innovation diagnostic. Compare survival, energy, covariance, POD means and modal amplitudes, PSD, ACF, one-step behavior, and innovation calibration separately.",
+    "Every training subprocess has a hard 2700-second limit. A timeout is a failed economical candidate, not permission to continue it.",
+    "After the matched four-arm study, the advisor may run at most two fresh refinements using fraction 0.01, 0.02, or 0.05 and M4, M8, or M16. Change at most one of fraction, particles, routing, or weight relative to the best completed arm.",
+    "Promote at most one clearly improved candidate to the 10000-step confirmation; never evaluate locked test repetitions."
+  ],
+  "advisor_guidance": "Complete the four matched initial trials before proposing a refinement. Prefer a candidate that improves both energy and covariance toward one without worsening survival or conditional diagnostics. The primary scientific question is whether fraction 0.02, M8, or their combination fixes noisy optimization. If combined M8 helps drift but not diffusion, prefer drift-only routing. If all four fail similarly, stop rather than changing architecture; that is evidence estimator calibration is not the main reason the 0p20 TCN underperforms. At most two additional fresh trials and one 10000-step confirmation are allowed.",
+  "budget": {
+    "max_training_trials": 6,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 4,
+  "allowed_training_modes": ["fresh"],
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--data-root": "/home/jonas/ucsd_thesis/reduced_data",
+    "--shared-basis": "/home/jonas/ucsd_thesis/reduced_data/0p20/shared_pod/shared_pod_r1000.h5",
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--no-structured-damping": true,
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--residual-architecture": "tcn",
+    "--tcn-context-frames": 15,
+    "--tcn-channels": 64,
+    "--tcn-kernel-size": 3,
+    "--tcn-dilations": [1, 2, 4],
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 4, 10, 20],
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift", "diffusion"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--stationary-lagged-covariance-weight": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--multistep-window-fraction": [[0.005], [0.01], [0.02], [0.05]],
+    "--multistep-particle-counts": [[4, 4, 4, 4], [8, 8, 8, 8], [16, 16, 16, 16]],
+    "--multistep-gradient-groups": [["drift"], ["drift", "diffusion"]],
+    "--multistep-weight": [[0.02], [0.03], [0.05]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.35, 2.75],
+    "pod_covariance_trace_ratio_range": [0.35, 2.75]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 10000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 21814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "tcn15_restoring_only_m4_f0p005_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_rescue_90m/trials/fresh_tcn15_full_restoring_only_h20_w0p03_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_rescue_90m/trials/fresh_tcn15_full_restoring_only_h20_w0p03_e5/rollout_5000_screen",
+      "hypothesis": "Matched noisy-estimator restoring-only TCN reference.",
+      "change_family": "external_reference"
+    },
+    {
+      "id": "markov_mlp_m4_f0p005_reference",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_mlp_energy_h20_w0p03_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn63_trimmed_structured_energy_score/trials/fresh_trimmed_structured_mlp_energy_h20_w0p03_e5/rollout_5000_screen",
+      "hypothesis": "Successful no-extra-history structured MLP comparator.",
+      "change_family": "external_reference"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "fresh_tcn15_restoring_m4_f0p02_both_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_restoring_only_m4_f0p005_reference",
+      "change_family": "batch_fraction",
+      "hypothesis": "Four times more scored batches reduce window-selection noise and the selected-update coefficient without changing particle noise.",
+      "expected_observation": "Smoother optimization improves energy and covariance relative to the matched reference while preserving conditional quality.",
+      "overrides": [
+        {"flag": "--multistep-window-fraction", "tokens": ["0.02"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_restoring_m8_f0p005_both_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_restoring_only_m4_f0p005_reference",
+      "change_family": "particle_count",
+      "hypothesis": "Doubling particles reduces especially the diffusion-gradient noise while retaining the original sparse batch schedule.",
+      "expected_observation": "Diffusion calibration and rollout covariance improve, revealing whether particle noise rather than batch selection was limiting.",
+      "overrides": [
+        {"flag": "--multistep-particle-counts", "tokens": ["8", "8", "8", "8"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_restoring_m8_f0p02_both_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_restoring_only_m4_f0p005_reference",
+      "change_family": "combined_estimator_noise",
+      "hypothesis": "Combining fraction 0.02 with M8 reduces both measured sources of energy-score gradient noise.",
+      "expected_observation": "This arm should give the strongest matched test of whether noisy energy-score optimization caused the 0p20 TCN rollout mismatch.",
+      "overrides": [
+        {"flag": "--multistep-window-fraction", "tokens": ["0.02"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["8", "8", "8", "8"], "remove": false}
+      ]
+    },
+    {
+      "id": "fresh_tcn15_restoring_m8_f0p02_drift_e5",
+      "training_mode": "fresh",
+      "parent_trial": "tcn15_restoring_only_m4_f0p005_reference",
+      "change_family": "gradient_routing",
+      "hypothesis": "Low-noise energy-score updates should stabilize drift, while one-step likelihood alone may estimate full diffusion more reliably than the still-noisy rollout score.",
+      "expected_observation": "Drift-only routing retains rollout stabilization while improving covariance or one-step diffusion calibration over joint routing.",
+      "overrides": [
+        {"flag": "--multistep-window-fraction", "tokens": ["0.02"], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": ["8", "8", "8", "8"], "remove": false},
+        {"flag": "--multistep-gradient-groups", "tokens": ["drift"], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

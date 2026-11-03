@@ -7,7 +7,9 @@ import torch
 
 from modelling.acdm.conditional_edm.checkpoint import load_checkpoint, load_model, save_checkpoint
 from modelling.acdm.conditional_edm.config import EDMConfig, TrainConfig
-from modelling.acdm.conditional_edm.data import checkpoint_data
+from modelling.acdm.conditional_edm.data import (checkpoint_data, fit_normalization,
+                                                 fit_trimmed_normalization,
+                                                 transition_batches)
 from modelling.acdm.conditional_edm.evaluate import evaluate_model
 from modelling.acdm.conditional_edm.train import train
 
@@ -112,3 +114,57 @@ def test_pod_only_normalization_reuses_matching_checkpoint(tmp_path, shared_data
     torch.testing.assert_close(stats.target_std, full_stats.target_std[1:])
     with pytest.raises(ValueError, match="transition settings"):
         _pod_only_normalization(path, pod_only, replace(config, lag_steps=1), pod_only.signature())
+
+
+def test_training_trim_filters_complete_stencils_and_refits_normalization(shared_data):
+    config = EDMConfig(reduced_dim=3, lag_steps=1,
+                       history_conditioning=True, history_steps=1)
+    preliminary = fit_normalization(shared_data, config)
+    stats, report = fit_trimmed_normalization(shared_data, config, 20, preliminary)
+
+    assert report["train_trim_percent"] == 20
+    assert report["train_trim_removed_count"] == 8
+    assert report["train_trim_removed_transition_count"] > 0
+    assert report["validation_trim_transition_count"] > 0
+    assert report["normalization_retained_transition_count"] == (
+        report["train_trim_transition_count"]
+        - report["train_trim_removed_transition_count"]
+    )
+    retained = list(transition_batches(
+        shared_data, config, "train", 5,
+        trim_cutoff=report["train_trim_norm_cutoff"],
+        trim_state_std=report["train_trim_state_std"],
+    ))
+    assert sum(len(batch["current_state"]) for batch in retained) == report[
+        "normalization_retained_transition_count"
+    ]
+    retained_current = torch.cat([batch["current_state"] for batch in retained])
+    retained_target = torch.cat([
+        batch["next_state"] - batch["current_state"] for batch in retained
+    ])
+    torch.testing.assert_close(stats.state_mean, retained_current.double().mean(0).float())
+    torch.testing.assert_close(stats.target_mean, retained_target.double().mean(0).float())
+
+
+def test_cli_highpass_and_training_trim_are_checkpointed(
+        tmp_path, highpass_shared_data):
+    from modelling.acdm.conditional_edm.train import main as train_main
+
+    output = tmp_path / "highpass_trimmed"
+    train_main([
+        "--experiment", "0p20", "--rank", "2",
+        "--data-root", highpass_shared_data.source_config["data_root"],
+        "--spatial-mean-highpass-hz", "20",
+        "--target-mode", "increment", "--lag-steps", "1", "--history-steps", "1",
+        "--train-trim-percent", "20", "--output", str(output),
+        "--device", "cpu", "--epochs", "1", "--hidden-dim", "8", "--num-blocks", "1",
+        "--batch-size", "4", "--max-train-batches", "1", "--max-validation-batches", "1",
+        "--cache-gib", "0", "--fixed-mse-batch-size", "0", "--rollout-every", "0",
+    ])
+    checkpoint = load_checkpoint(output / "best.pt")
+    assert checkpoint["data_config"]["spatial_mean_highpass_hz"] == 20.0
+    assert checkpoint["train_config"]["train_trim_percent"] == 20.0
+    assert checkpoint["training"]["train_trim_norm_cutoff"] > 0
+    assert checkpoint["training"]["normalization_fit"] == "retained_training_transitions"
+    reopened = checkpoint_data(checkpoint)
+    assert reopened.spatial_mean_highpass_hz == 20.0

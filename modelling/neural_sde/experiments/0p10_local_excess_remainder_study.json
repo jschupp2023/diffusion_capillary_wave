@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_local_excess_remainder_v1",
+  "workflow_module": "modelling.frequency_hybrid.local_excess_remainder",
+  "preparation_uses_oscillators": true,
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_local_excess_rank1_v1/evaluation",
+  "total_timeout_seconds": 5400,
+  "training_timeout_seconds": 2400,
+  "evaluation_timeout_seconds": 1200,
+  "scientific_goal": "Test whether the smoother exact remainder left by ten rank-one local spectral-excess projections is easier for the standard rank10 TCN63 neural SDE to learn than the earlier deeply notched contiguous-band remainder.",
+  "constraints": [
+    "Identify the ten complex spatial directions and oscillator parameters from training repetitions 1-12 only; validation repetitions 13-14 are evaluation only and test repetitions 15-16 remain locked.",
+    "Preserve the spatial mean plus ten POD coordinates, native sampling, HP50 spatial-mean preprocessing, and the standard TCN63 constant-diagonal-diffusion architecture.",
+    "Define every target exactly as full minus the same ten filtered rank-one complex projections and verify reconstruction before training.",
+    "Keep the complex oscillator bank frozen. Evaluate both raw neural output and output projected through the fixed local-excess complement.",
+    "Judge learnability from long-rollout survival, remainder PSD shape and power, energy, increments and ACF; one-step NLL alone is insufficient."
+  ],
+  "arms": [
+    {
+      "id": "nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Matched five-epoch TCN63 one-step NLL test on the smoother local-excess remainder.",
+      "options": ["--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5"]
+    },
+    {
+      "id": "joint_es_e3",
+      "mode": "finetune",
+      "parent": "nll_e5",
+      "description": "Short rollout-calibration follow-up only after the matched NLL parent is available.",
+      "options": ["--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "20", "100", "300", "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.03", "--stationary-variance-weight", "0.001", "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125", "--learning-rate", "0.00001", "--epochs", "3"]
+    }
+  ],
+  "evaluation": {
+    "horizon": 60000,
+    "conditions": 2,
+    "ensemble": 4,
+    "seed": 41,
+    "device": "cuda",
+    "diffusion_scales": [1.0]
+  }
+}

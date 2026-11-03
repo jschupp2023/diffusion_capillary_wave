@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_history_capacity",
+  "scientific_goal": "Determine whether greater nonlinear capacity and multiscale raw-state history can whiten held-out 0p10 one-step innovations, then determine whether short-horizon multistep fine-tuning can retain that gain while restoring stable autonomous rollout moments.",
+  "scientific_constraints": [
+    "Tune and select only on validation repetitions 13 and 14; keep test repetitions 15 and 16 locked.",
+    "Use the saved 5 percent training-increment trim, rank-20 shared POD coordinates, 50 Hz high-pass spatial mean, native-lag velocity state, full diffusion, and diagonal damped-residual drift in every fresh matched arm.",
+    "Run the declared one-step history and capacity arms before adaptive tuning.",
+    "Separate history from capacity: compare history-1 and longer-history models at 128x128 before attributing a gain to either change.",
+    "Judge innovation whitening using both median and maximum validation ACF at lags 1, 2, 5, 10, 20, 50, 100, 256, and 512; moving correlation into a longer tail is failure.",
+    "Treat validation NLL, innovation mean/covariance calibration, innovation ACF/PSD, rollout survival, energy, POD moments, and rollout PSD as separate evidence.",
+    "Do not promote a model solely for lower validation NLL or lower median ACF if leading-coordinate maximum ACF remains large.",
+    "Use 5000-step validation screens before any 50000-step confirmation.",
+    "After the one-step arms, apply multistep training only as a fine-tune of the best supported architecture. Start with horizons 2 and 5; test horizons 2, 5, 10, and 20 only if the short-horizon fine-tune is finite and preserves the innovation improvement.",
+    "Interpret rollout PSD against the process retained by the saved 5 percent training trim; do not optimize generated/untrimmed mid-frequency power toward one.",
+    "Prefer the smallest history stencil and network that materially improve innovation whitening while preserving stable rollout moments."
+  ],
+  "advisor_guidance": "The stable memory-free parent has good 50000-step moments but colored validation innovations: whitened median absolute ACF is about 0.243, 0.331, and 0.165 at lags 1, 2, and 5, with maximum values about 0.906, 0.920, and 0.812. Existing multistep-trained raw-history models modestly reduced selected ACF values but badly inflated autonomous energy: history 1,2,5 with a 128x128 network reached about 4.24 times trimmed-reference energy, while history 1,2,5,10,20,50 with a 64x64 network reached about 6.72 times. Therefore first use matched one-step arms to determine whether history and capacity genuinely improve held-out conditional innovations. If a one-step architecture improves both median and maximum ACF without displacing correlation into lags 20 through 512, fine-tune that exact architecture with multistep horizons 2 and 5. Reject NLL-only improvements and screen rollout stability cheaply before confirmation. A longer candidate with offsets 100 and 150 is allowed only if the up-to-50-frame arms improve short-lag ACF but leave the leading-coordinate persistent tail unresolved.",
+  "budget": {
+    "max_training_trials": 8,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 5,
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--rank": 20,
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [128, 128],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "diagonal",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5],
+    "--multistep-mode-counts": [20, 20],
+    "--multistep-particle-counts": [64, 64],
+    "--multistep-window-fraction": 0.1,
+    "--multistep-window-sampling": "batches",
+    "--multistep-validation-seed": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--history-offsets": [
+      [1],
+      [1, 2, 5],
+      [1, 2, 5, 10, 20, 50],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 50, 100, 150]
+    ],
+    "--hidden-layers": [
+      [128, 128],
+      [128, 128, 128],
+      [256, 256],
+      [256, 256, 128]
+    ],
+    "--multistep-weight": [[0], [0.03], [0.1]],
+    "--multistep-horizons": [[2, 5], [2, 5, 10, 20]],
+    "--multistep-mode-counts": [[20, 20], [20, 20, 10, 3]],
+    "--multistep-particle-counts": [[64, 64], [64, 64, 32, 16]],
+    "--learning-rate": [[0.0001], [0.0003], [0.001]],
+    "--epochs": [[3], [5], [8], [10]]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 8192,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 1024,
+    "output_name": "validation_innovation_diagnostic"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 5,
+    "ensemble_size": 3,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "stable_memory_free_parent",
+      "run_dir": "runs/adaptive/neural_sde_0p10/trials/diagonal_short_h2_5_ablation",
+      "rollout_dir": "runs/adaptive/neural_sde_0p10/trials/diagonal_short_h2_5_ablation/rollout_50000_confirmation",
+      "hypothesis": "The existing history-1 short-multistep model is the stable rollout and innovation baseline.",
+      "change_family": "seed_control"
+    },
+    {
+      "id": "existing_sparse50_64x64_multistep",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_history_1_2_5_10_20_50_reduced_multistep_full_diffusion",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_history_1_2_5_10_20_50_reduced_multistep_full_diffusion/rollout_50000_validation",
+      "hypothesis": "The existing sparse up-to-50-frame history model records the prior ACF improvement and rollout-amplitude failure.",
+      "change_family": "seed_history_failure_control"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "one_step_history1_128x128",
+      "training_mode": "fresh",
+      "parent_trial": "stable_memory_free_parent",
+      "hypothesis": "A 128x128 one-step history-1 model separates the effects of one-step training and increased capacity from added history.",
+      "change_family": "one_step_capacity_control",
+      "expected_observation": "This control may lower validation NLL, but should not substantially whiten the leading-coordinate innovations if missing history is the main limitation.",
+      "overrides": []
+    },
+    {
+      "id": "one_step_sparse50_128x128",
+      "training_mode": "fresh",
+      "parent_trial": "one_step_history1_128x128",
+      "hypothesis": "Sparse multiscale history through 50 frames supplies missing predictive state without the optimization burden of every intermediate frame.",
+      "change_family": "one_step_history",
+      "expected_observation": "Relative to the matched history-1 control, both median and maximum validation innovation ACF decrease at short lags and the long-lag tail does not increase.",
+      "overrides": [
+        {"flag": "--history-offsets", "tokens": ["1", "2", "5", "10", "20", "50"], "remove": false}
+      ]
+    },
+    {
+      "id": "one_step_dense10_sparse50_128x128",
+      "training_mode": "fresh",
+      "parent_trial": "one_step_sparse50_128x128",
+      "hypothesis": "Dense access to the first ten frames plus offsets 20 and 50 resolves the sharp short-lag innovation structure better than a sparse stencil at matched capacity.",
+      "change_family": "one_step_history_resolution",
+      "expected_observation": "Lag-1-through-lag-10 innovation ACF improves beyond the sparse-50 arm without worsening calibration or creating a persistent tail.",
+      "overrides": [
+        {"flag": "--history-offsets", "tokens": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "50"], "remove": false}
+      ]
+    },
+    {
+      "id": "one_step_dense10_sparse50_256x256x128",
+      "training_mode": "fresh",
+      "parent_trial": "one_step_dense10_sparse50_128x128",
+      "hypothesis": "The dense-short multiscale history requires greater nonlinear capacity to extract a predictive latent state rather than treating its information as diffusion.",
+      "change_family": "one_step_history_capacity",
+      "expected_observation": "Relative to the matched 128x128 history arm, validation innovation ACF and conditional-mean skill improve materially without worse covariance calibration or immediate rollout instability.",
+      "overrides": [
+        {"flag": "--history-offsets", "tokens": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "20", "50"], "remove": false},
+        {"flag": "--hidden-layers", "tokens": ["256", "256", "128"], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

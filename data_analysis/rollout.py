@@ -82,6 +82,8 @@ class Rollout:
                                               if self.include_spatial_mean else "physical shared POD coefficients only"),
                       temporal_mean_restored=False)
         result["spatial_mean_highpass_hz"] = self.spatial_mean_highpass_hz
+        if "temporal_preprocessing" in self.metadata:
+            result["temporal_preprocessing"] = self.metadata["temporal_preprocessing"]
         if "reference_window_filter" in self.metadata:
             result["reference_window_filter"] = self.metadata["reference_window_filter"]
         if "reference_window_trim_policy" in self.metadata:

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_local_excess_low77_psd_refinement_v1",
+  "workflow_module": "modelling.frequency_hybrid.local_excess_remainder",
+  "preparation_uses_oscillators": true,
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_local_excess_rank1_low77_v1/evaluation",
+  "normal_rollout_diagnostics": true,
+  "total_timeout_seconds": 14400,
+  "training_timeout_seconds": 2400,
+  "evaluation_timeout_seconds": 1200,
+  "scientific_goal": "Improve the full-range PSD of the eleven-peak neural remainder, especially spatial-mean power above 1 kHz, using short-horizon energy scores and targeted endpoint-moment matching at learned diffusion scale 1.",
+  "constraints": [
+    "Warm-start every arm independently from the same tcn63_longvar_w0p1_e3 checkpoint.",
+    "Keep the rank-10 TCN63 architecture, decomposition, oscillator bank, data split and learned diffusion parameterization fixed.",
+    "Train at diffusion scale 1 and do not use rollout-time diffusion rescaling for model selection.",
+    "Use short native-step horizons that can affect the missing high-frequency power.",
+    "Target endpoint variance to the spatial mean only; do not dilute its gradient over ten POD coordinates.",
+    "Select using stable 60000-step validation rollouts, full-range center and spatial-mean PSD, energy, covariance, increments and ACF rather than training loss alone."
+  ],
+  "arms": [
+    {
+      "id": "nll_control_e2",
+      "mode": "finetune",
+      "checkpoint": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1/trials/tcn63_longvar_w0p1_e3/best.pt",
+      "description": "Matched two-epoch continuation without rollout or moment pressure.",
+      "options": ["--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0", "--learning-rate", "0.00001", "--epochs", "2"]
+    },
+    {
+      "id": "energy_score_w0p03_e2",
+      "mode": "finetune",
+      "checkpoint": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1/trials/tcn63_longvar_w0p1_e3/best.pt",
+      "description": "Gentle joint energy score on short generated paths with drift and diffusion gradients.",
+      "options": ["--multistep-weight", "0.03", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "5", "20", "50", "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0", "--learning-rate", "0.00001", "--epochs", "2"]
+    },
+    {
+      "id": "energy_score_w0p1_e2",
+      "mode": "finetune",
+      "checkpoint": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1/trials/tcn63_longvar_w0p1_e3/best.pt",
+      "description": "Stronger matched energy-score arm to test whether rollout pressure has a directional PSD response.",
+      "options": ["--multistep-weight", "0.1", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "5", "20", "50", "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0", "--learning-rate", "0.00001", "--epochs", "2"]
+    },
+    {
+      "id": "mean_variance_w0p03_e2",
+      "mode": "finetune",
+      "checkpoint": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1/trials/tcn63_longvar_w0p1_e3/best.pt",
+      "description": "Targeted spatial-mean endpoint-variance matching without energy-score pressure.",
+      "options": ["--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0.03", "--stationary-variance-pod-mode-count", "0", "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125", "--learning-rate", "0.00001", "--epochs", "2"]
+    },
+    {
+      "id": "energy_score_w0p03_mean_variance_w0p03_e2",
+      "mode": "finetune",
+      "checkpoint": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1/trials/tcn63_longvar_w0p1_e3/best.pt",
+      "description": "Combined gentle energy score and targeted spatial-mean variance calibration.",
+      "options": ["--multistep-weight", "0.03", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "5", "20", "50", "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0.03", "--stationary-variance-pod-mode-count", "0", "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125", "--learning-rate", "0.00001", "--epochs", "2"]
+    }
+  ],
+  "evaluation": {
+    "horizon": 60000,
+    "conditions": 2,
+    "ensemble": 4,
+    "seed": 51,
+    "device": "cuda",
+    "diffusion_scales": [1.0]
+  }
+}

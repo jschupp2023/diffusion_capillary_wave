@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_multistep_gradient_routing",
+  "scientific_goal": "Determine which drift parameter block turns the finite-particle multistep GMM objective into improved long-rollout amplitude and energy, while preventing the MC term from updating diffusion.",
+  "scientific_constraints": [
+    "Train every matched arm fresh with the same seed, damped-residual architecture, bounded state-diagonal diffusion, data split, normalization, lag, high-pass spatial mean, and saved 5 percent trimming rule.",
+    "Use the established horizons 2,5,10,20,30, mode counts 20,15,10,3,3, and particle counts 64,64,64,24,12 for every multistep arm.",
+    "Do not use endpoint mean or variance losses: this study isolates MC-GMM gradient routing.",
+    "The one-step NLL updates all jointly trainable drift and diffusion parameters in every arm. Only the MC-GMM gradient is routed selectively.",
+    "The MC-GMM term must never update diffusion in the stiffness-only, structured, or all-drift arms.",
+    "Compare energy, modal amplitude and covariance, PSD, ACF, rollout survival, and one-step NLL separately; do not select on NLL alone.",
+    "Tune and select only on validation repetitions 13 and 14; keep test repetitions 15 and 16 locked."
+  ],
+  "advisor_guidance": "Run the four queued matched arms before making a decision: one-step-only, MC stiffness-only, MC structured stiffness-plus-damping, and MC all-drift. First test whether stiffness-only reproduces the amplitude and energy correction. If structured improves temporal behavior without amplitude loss, prefer it. Treat all-drift as evidence for whether the noisy residual MLP contributes useful signal. Do not add MC diffusion gradients. Promote at most one arm after the validation screens.",
+  "budget": {
+    "max_training_trials": 4,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 2,
+  "base_train_options": {
+    "--experiment": "0p20",
+    "--rank": 20,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history": 1,
+    "--hidden-layers": [64, 64],
+    "--drift-type": "damped_residual",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--damped-operator": "diagonal",
+    "--diffusion-type": "bounded_state_diagonal",
+    "--diffusion-log-range": 0.5,
+    "--spatial-mean-highpass-hz": 50,
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.1,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5, 10, 20, 30],
+    "--multistep-mode-counts": [20, 15, 10, 3, 3],
+    "--multistep-particle-counts": [64, 64, 64, 24, 12],
+    "--multistep-window-fraction": 0.1,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0,
+    "--stationary-variance-weight": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--multistep-weight": [[0], [0.1]],
+    "--multistep-gradient-groups": [["stiffness"], ["structured"], ["drift"], ["residual"]]
+  },
+  "screen": {
+    "horizon": 10000,
+    "conditions": 5,
+    "ensemble_size": 3,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "seed_runs": [],
+  "initial_trials": [
+    {
+      "id": "one_step_damped_bounded",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "hypothesis": "The matched one-step model retains substantial long-rollout amplitude excess without a closed-loop correction.",
+      "change_family": "one_step_control",
+      "expected_observation": "One-step NLL is competitive but energy and leading-mode covariance remain above the trimmed reference.",
+      "overrides": [
+        {"flag": "--multistep-weight", "tokens": ["0"], "remove": false}
+      ]
+    },
+    {
+      "id": "multistep_stiffness_only",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "hypothesis": "The relatively consistent MC-GMM stiffness gradient supplies most of the restoring correction needed to control amplitude.",
+      "change_family": "multistep_gradient_routing",
+      "expected_observation": "Energy and leading-mode amplitude improve substantially without MC updates to damping, residual drift, or diffusion.",
+      "overrides": [
+        {"flag": "--multistep-gradient-groups", "tokens": ["stiffness"], "remove": false}
+      ]
+    },
+    {
+      "id": "multistep_structured",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "hypothesis": "Routing MC-GMM gradients to stiffness and damping improves amplitude and temporal decorrelation while avoiding residual-network and diffusion noise.",
+      "change_family": "multistep_gradient_routing",
+      "expected_observation": "Amplitude correction matches stiffness-only and ACF or PSD improves if damping carries useful multistep information.",
+      "overrides": [
+        {"flag": "--multistep-gradient-groups", "tokens": ["structured"], "remove": false}
+      ]
+    },
+    {
+      "id": "multistep_all_drift",
+      "training_mode": "fresh",
+      "parent_trial": "",
+      "hypothesis": "The residual MLP provides additional useful closed-loop correction despite its noisier MC gradient.",
+      "change_family": "multistep_gradient_routing",
+      "expected_observation": "All-drift outperforms structured-only only if the residual gradient contributes reproducible functional corrections.",
+      "overrides": []
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

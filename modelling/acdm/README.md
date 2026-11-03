@@ -63,6 +63,35 @@ Constant coordinates use scale 1. No prepared coefficients are saved; only
 model checkpoints and run metadata are written. The standalone preparation
 module still offers standardized batches for other consumers.
 
+To match the filtered and trimmed 0p20 Neural-SDE population, select one of the
+stored spatial-mean high-pass trajectories and trim the upper tail of native
+increment norms:
+
+```bash
+python -m modelling.acdm.conditional_edm train \
+  --experiment 0p20 --rank 20 \
+  --validation-reps 13 14 --test-reps 15 16 \
+  --target-mode increment --lag-steps 1 --history-steps 1 \
+  --spatial-mean-highpass-hz 50 --train-trim-percent 5 \
+  --epochs 20 --batch-size 256 \
+  --output runs/acdm_0p20_r20_increment_hp50_trim5
+```
+
+`--spatial-mean-highpass-hz` changes only coordinate zero to
+`sqrt(N) * stored_filtered_spatial_mean`; shared-POD fluctuation coordinates
+are unchanged. The requested dataset must already exist in every source HDF5
+file. It is incompatible with `--no-spatial-mean`, and its dataset identity is
+saved in the data configuration so resume and evaluation reuse it.
+
+`--train-trim-percent P` first fits the untrimmed training-only state scale,
+then sets a frozen cutoff at percentile `100-P` of the normalized native
+one-frame increment norm. A lag/history transition is retained only when every
+native increment from its required history through its target is at or below
+the cutoff. State and target normalization are refitted on retained training
+transitions; validation loss uses the same frozen rule. The cutoff, preliminary
+state scale, and train/validation retention counts are saved in `config.json`
+and checkpoints. Zero preserves the untrimmed behavior.
+
 ## Training diagnostics and runtime
 
 New models use `--conditioning-mode joint_noised` by default. Use

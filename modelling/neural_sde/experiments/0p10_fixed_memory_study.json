@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "kind": "fixed_memory",
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_fixed_memory_v1",
+  "parent": "runs/comparison/neural_sde_0p10_tcn63_downsample8_energy_score/onestep/best.pt",
+  "oscillators": "runs/diagnostics/latent_oscillators_0p10_two_family_v1/two_family/model.npz",
+  "window": 6449,
+  "validation_windows": 4096,
+  "ridge": [
+    0.001,
+    0.01,
+    0.1,
+    1.0,
+    10.0
+  ],
+  "fit_timeout_seconds": 180,
+  "rollout_timeout_seconds": 180,
+  "analysis_timeout_seconds": 120,
+  "total_timeout_seconds": 900,
+  "arms": [
+    {
+      "id": "n8192_s0",
+      "train_windows": 8192,
+      "seed": 0
+    },
+    {
+      "id": "n32768_s0",
+      "train_windows": 32768,
+      "seed": 0
+    },
+    {
+      "id": "n32768_s1",
+      "train_windows": 32768,
+      "seed": 1
+    }
+  ],
+  "screen": {
+    "horizon": 5500,
+    "conditions": 2,
+    "ensemble_size": 2,
+    "seed": 1,
+    "nperseg": 2048,
+    "discard": 512
+  },
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [
+      0.35,
+      4.0
+    ],
+    "pod_covariance_trace_ratio_range": [
+      0.35,
+      4.0
+    ]
+  },
+  "scientific_constraints": [
+    "Keep parent, diffusion, projections, poles and finite memory fixed. Only ridge readout fitted. No neural-SDE retraining or stochastic backpropagation.",
+    "Fixed training reps1-12; validation13-14 with independent fixed validation seed0; no test15-16.",
+    "The three arms differ in training-window count or sampling seed; windows are not independent trajectories and the small draw is not a nested subset.",
+    "Same 6449 history and evaluation seed give exactly matched reference origins for the zero-readout parent and all probes; assert reference equality.",
+    "If zero readout wins one-step selection, evaluate best nonzero ridge separately and label exploratory; preserve selected best.pt.",
+    "Screen center peak contrast and band shape plus spatial mean/modal PSD, energy, covariance and survival. Gates reject catastrophic results; passing gates is not scientific success.",
+    "No clipping, no selective path removal, no reuse or restart of the cancelled expensive TCN campaign. At most three fits and four screens. Global 900-second budget, subprocess TERM then KILL after5s.",
+    "Two validation records and short Welch averages provide a screen, not a definitive rejection or confirmation. Compare saved plots for spurious peaks; existing peak score does not penalize all spurious peaks."
+  ]
+}

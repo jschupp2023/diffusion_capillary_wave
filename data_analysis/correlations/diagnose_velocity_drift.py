@@ -77,6 +77,7 @@ def structured_components(model, current, previous):
     result = dict(stiffness_matrix=k.tolist(), damping_matrix=d.tolist(),
                   stiffness_eigenvalues=np.linalg.eigvalsh(k).tolist(),
                   damping_eigenvalues=np.linalg.eigvalsh(d).tolist(),
+                  structured_damping=model.config.structured_damping,
                   stiffness_initial=model.config.stiffness_init,
                   damping_initial=model.config.damping_init)
     for name, sl in (('pod', slice(1,None)), ('spatial_mean', slice(0,1)), ('all', slice(None))):
@@ -260,10 +261,14 @@ def plot_structured(out, populations):
         effective_k = k-np.diag(coef[1:1+ndim])
         effective_d = d-np.diag(coef[1+ndim:])
         axes[2].plot(modes, (effective_k/k)[1:], style, color='tab:blue', label=f'{pop}: restoring')
-        axes[2].plot(modes, (effective_d/d)[1:], style, color='tab:orange', label=f'{pop}: damping')
+        if components['structured_damping']:
+            axes[2].plot(modes, (effective_d/d)[1:], style, color='tab:orange', label=f'{pop}: damping')
     axes[1].set(xlabel='POD mode', ylabel='Drift RMS / training increment std')
     axes[2].set(xlabel='POD mode', ylabel='Total effective coefficient / explicit matrix')
     axes[2].axhline(1,color='gray',ls=':'); axes[2].set_yscale('symlog', linthresh=1)
+    if not components['structured_damping']:
+        axes[2].text(.03, .05, 'Explicit damping disabled; residual damping is saved in summary.json',
+                     transform=axes[2].transAxes, fontsize=7)
     for ax in axes:
         ax.grid(alpha=.2); ax.legend(fontsize=7)
     fig.suptitle('Explicit matrices and neural residual; total coefficients use joint linear projections')
@@ -275,9 +280,12 @@ def analyze(args):
     rollout = Rollout(args.rollout)
     model, checkpoint = load_model(Path(rollout.metadata['checkpoint']), 'cpu')
     if (model.config.state_variable != 'velocity' or model.config.lag_steps != 1
+            or model.config.residual_architecture != 'mlp'
             or model.config.history_steps != 1 or rollout.lag_steps != 1
             or not rollout.include_spatial_mean):
-        raise ValueError('This audit requires lag-1 velocity, one history frame, and spatial mean coordinate.')
+        raise ValueError('This audit requires MLP residual, lag-1 velocity, one history frame, '
+                         'and spatial mean coordinate. Use training_innovation_diagnostic '
+                         'for TCN innovation statistics.')
     spec = training_trim_specification(rollout)
     if spec is None:
         raise ValueError('Saved training trim is required.')

@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p20_tcn_joint_state_moment_refinement",
+  "training_timeout_seconds": 2700,
+  "scientific_goal": "Determine whether endpoint mean and diagonal-variance matching can correct the remaining stationary mean, covariance and energy errors of the 0p20 restoring-only TCN15 joint-energy-score models while preserving their useful nonmean PSD and finite rollouts.",
+  "scientific_constraints": [
+    "Fine-tune existing joint-energy-score checkpoints; do not change the restoring-only TCN15 architecture, full constant diffusion, rank, data split, normalization, stored 50 Hz high-pass spatial mean or exact 5 percent training trim.",
+    "Use validation repetitions 13 and 14 for selection. Test repetitions 15 and 16 remain locked.",
+    "Retain each parent's joint displacement-velocity energy-score objective during fine-tuning. The h20 parents retain horizons 2,4,10,20 with equal horizon weights; the h50 parent retains horizons 2,4,10,20,50 with weights 0.10,0.10,0.15,0.25,0.40.",
+    "Run the two h20 mean-plus-variance trials and the h50 mean-only rescue before adaptive selection. The h20 position-weight-1 parent is the conservative arm with a finite 50000-step confirmation; position-weight-2 is the better 5000-step covariance and nonmean-PSD arm.",
+    "Use mean weight 0.01 and diagonal-variance weight 0.001 for h20. Mean gradients update drift; variance gradients update trainable drift and diffusion. The h50 arm uses mean weight 0.01 and zero variance weight because its centered covariance is already close to the trimmed reference.",
+    "Moment endpoints are 100,200,500 native steps. Use 64 distinct measured starts per selected update and score 1.25 percent of batches so the correction is sampled often enough to be interpretable. The objective uses two independent stochastic branches per start and every path must satisfy the saved trim cutoff through its endpoint.",
+    "Use one conservative fine-tuning epoch at learning rate 1e-5. Do not resume a timed-out partial checkpoint, and do not infer success from endpoint losses or total validation loss alone.",
+    "The spatial-mean coordinate participates in mean and variance matching. Nevertheless, capillary deformation energy excludes that coordinate, so require simultaneous improvement of leading POD-mode means, trimmed-reference energy and covariance rather than accepting spatial-mean improvement alone.",
+    "Screen every candidate on the same 32 full-strength validation paths for 5000 steps. Compare against its own parent and retain energy, POD mean, covariance, spatial-mean statistics, PSD, innovation calibration, survival and leading-mode diagnostics separately.",
+    "For h20, success requires lower POD mean error and both energy and covariance closer to one without material degradation of the center-without-spatial-mean PSD through 10 kHz. For h50, a useful rescue must substantially reduce its 2.412 energy ratio and 0.602 POD mean error while retaining near-unit covariance; merely preserving its centered variance is insufficient.",
+    "At most one fourth training trial may adjust moment weight or learning rate after the three matched arms. Promote at most one candidate to a 50000-step validation confirmation; keep test repetitions locked."
+  ],
+  "advisor_guidance": "Matched 5000-step parent metrics are: h20 position 1 has trimmed energy 1.462, covariance trace 1.330, covariance error 0.381 and POD mean RMSE 0.255; h20 position 2 has 1.460, 1.287, 0.341 and 0.276; h50 position 1 has 2.412, 1.013, 0.109 and 0.602. The h20 position-2 center-without-spatial-mean integrated PSD power is 1.073 times the untrimmed reference and its 0.113-10 kHz band ratios are 0.809,1.134,1.105,1.282, but the spatial mean is underpowered. H50's near-unit centered covariance hides large mean shifts in POD modes 1-3, whose RMS ratios are 1.972,1.587,1.556 and which account for about 99 percent of net energy excess. The balanced h20 checkpoint remained finite at 50000 steps but retained energy 1.509, covariance trace 1.352 and mean RMSE 0.279. Complete all three queued refinements before deciding. Select from autonomous rollouts, not endpoint loss. If both h20 refinements improve mean but variance matching overshoots covariance below one, use the single adaptive slot for a lighter variance weight 0.0003. If the h50 mean-only arm makes a large joint improvement while retaining covariance, the adaptive slot may raise mean weight to 0.03 or lower learning rate to 3e-6, but do not add variance matching to h50 unless its new rollout becomes overdispersed. PSD screens use an untrimmed uniformly sampled reference and therefore overstate the high-frequency mismatch to the trimmed target population.",
+  "budget": {
+    "max_training_trials": 4,
+    "max_confirmations": 1
+  },
+  "max_overrides_per_trial": 6,
+  "allowed_training_modes": [
+    "finetune"
+  ],
+  "base_train_options": {
+    "--train-mode": "joint",
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.03,
+    "--multistep-objective": "energy_score",
+    "--multistep-target": "joint",
+    "--multistep-horizons": [2, 4, 10, 20],
+    "--multistep-horizon-weights": [1, 1, 1, 1],
+    "--multistep-position-weight": 1,
+    "--multistep-velocity-weight": 1,
+    "--multistep-particle-counts": [4, 4, 4, 4],
+    "--multistep-window-fraction": 0.005,
+    "--multistep-window-sampling": "batches",
+    "--multistep-gradient-groups": ["drift", "diffusion"],
+    "--multistep-validation-seed": 0,
+    "--stationary-mean-weight": 0.01,
+    "--stationary-variance-weight": 0.001,
+    "--stationary-lagged-covariance-weight": 0,
+    "--stationary-mean-horizons": [100, 200, 500],
+    "--stationary-mean-trajectories": 64,
+    "--stationary-mean-batch-fraction": 0.0125,
+    "--stationary-mean-validation-seed": 0,
+    "--restoring-orthogonality-weight": 0,
+    "--damping-orthogonality-weight": 0,
+    "--diagonal-linear-orthogonality-weight": 0,
+    "--history-noise-weight": 0,
+    "--history-noise-std": 0.05,
+    "--history-noise-validation-seed": 0,
+    "--stability-weight": 0,
+    "--stability-a": 0.01,
+    "--stability-b": 0.01,
+    "--stability-metric": "auto",
+    "--stability-perturb-scale": 0.2,
+    "--stability-generated-steps": 0,
+    "--stability-validation-seed": 0,
+    "--learning-rate": 0.00001,
+    "--batch-size": 256,
+    "--epochs": 1,
+    "--seed": 0,
+    "--tcn-rollout-cache": true,
+    "--indexed-training-batches": true,
+    "--tcn-rollout-compile": false
+  },
+  "allowed_overrides": {
+    "--multistep-horizons": [[2, 4, 10, 20], [2, 4, 10, 20, 50]],
+    "--multistep-horizon-weights": [[1, 1, 1, 1], [0.10, 0.10, 0.15, 0.25, 0.40]],
+    "--multistep-position-weight": [[1], [2]],
+    "--multistep-particle-counts": [[4, 4, 4, 4], [4, 4, 4, 4, 4]],
+    "--stationary-mean-weight": [[0.005], [0.01], [0.03]],
+    "--stationary-variance-weight": [[0], [0.0003], [0.001], [0.003]],
+    "--stationary-mean-horizons": [[20, 50, 100], [50, 100, 250], [100, 200, 500]],
+    "--stationary-mean-trajectories": [[32], [64]],
+    "--stationary-mean-batch-fraction": [[0.00625], [0.0125]],
+    "--learning-rate": [[0.000003], [0.00001]],
+    "--epochs": [[1]]
+  },
+  "screen_before_innovations": true,
+  "screen_gate": {
+    "max_peak_pod_standardized_rms": 10,
+    "max_peak_absolute_standardized_coordinate": 50,
+    "energy_ratio_range": [0.35, 3.0],
+    "pod_covariance_trace_ratio_range": [0.35, 2.5]
+  },
+  "innovation": {
+    "split": "validation",
+    "device": "cuda",
+    "batch_size": 256,
+    "max_lag": 512,
+    "threshold": 0.1,
+    "consecutive": 100,
+    "min_pairs": 1000,
+    "nperseg": 256,
+    "output_name": "validation_innovation_diagnostic_n256"
+  },
+  "screen": {
+    "horizon": 5000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 20814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 8,
+    "ensemble_size": 4,
+    "batch_size": 4,
+    "device": "cuda",
+    "seed": 31814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 15, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "h20_pos1_parent",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos1_vel1_h20_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos1_vel1_h20_e5/rollout_5000_screen",
+      "hypothesis": "The balanced joint h20 checkpoint supplies the conservatively biased parent with independently confirmed 50000-step survival.",
+      "change_family": "joint_h20_balanced_seed"
+    },
+    {
+      "id": "h20_pos2_parent",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos2_vel1_h20_e5/rollout_5000_screen",
+      "hypothesis": "The position-emphasized h20 checkpoint supplies the best screened covariance and nonmean PSD, with a slightly larger mean error for moment refinement to correct.",
+      "change_family": "joint_h20_position_seed"
+    },
+    {
+      "id": "h50_pos1_parent",
+      "run_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos1_vel1_h50_longweighted_e5",
+      "rollout_dir": "runs/adaptive/neural_sde_0p20_tcn_joint_state_energy_score/trials/fresh_tcn15_joint_es_pos1_vel1_h50_longweighted_e5/rollout_5000_screen",
+      "hypothesis": "The long-weighted h50 checkpoint supplies nearly correct centered covariance but a severely displaced closed-loop mean, testing whether targeted mean matching can salvage that variance structure.",
+      "change_family": "joint_h50_mean_shift_seed"
+    }
+  ],
+  "initial_trials": [
+    {
+      "id": "h20_pos1_mean0p01_var0p001",
+      "training_mode": "finetune",
+      "parent_trial": "h20_pos1_parent",
+      "change_family": "joint_h20_moment_refinement",
+      "hypothesis": "A conservative mean-plus-variance fine-tune reduces the balanced h20 parent's leading-mode mean and covariance excess while retaining its confirmed stable basin and useful spectral shape.",
+      "expected_observation": "Lower POD mean error than 0.255, energy below 1.462 and covariance closer to one than 1.330, with finite paths and preserved center-without-spatial-mean PSD through 10 kHz.",
+      "overrides": []
+    },
+    {
+      "id": "h20_pos2_mean0p01_var0p001",
+      "training_mode": "finetune",
+      "parent_trial": "h20_pos2_parent",
+      "change_family": "joint_h20_position_moment_refinement",
+      "hypothesis": "Moment matching can correct the position-weight-2 parent's slightly worse mean while preserving its better covariance and nonmean PSD.",
+      "expected_observation": "Lower POD mean error than 0.276, energy below 1.460 and covariance closer to one than 1.287 without covariance undershoot or PSD degradation.",
+      "overrides": [
+        {"flag": "--multistep-position-weight", "tokens": [2], "remove": false}
+      ]
+    },
+    {
+      "id": "h50_pos1_mean0p01_var0",
+      "training_mode": "finetune",
+      "parent_trial": "h50_pos1_parent",
+      "change_family": "joint_h50_mean_rescue",
+      "hypothesis": "Mean-only moment matching can move the h50 checkpoint back toward the measured attractor while preserving the centered covariance that its long-horizon energy score already matched.",
+      "expected_observation": "A substantial reduction from POD mean error 0.602 and energy 2.412 with covariance remaining near one, finite paths and no further PSD suppression.",
+      "overrides": [
+        {"flag": "--multistep-horizons", "tokens": [2, 4, 10, 20, 50], "remove": false},
+        {"flag": "--multistep-horizon-weights", "tokens": [0.10, 0.10, 0.15, 0.25, 0.40], "remove": false},
+        {"flag": "--multistep-particle-counts", "tokens": [4, 4, 4, 4, 4], "remove": false},
+        {"flag": "--stationary-variance-weight", "tokens": [0], "remove": false}
+      ]
+    }
+  ],
+  "advisor": {
+    "mode": "codex",
+    "command": "codex",
+    "model": null
+  }
+}

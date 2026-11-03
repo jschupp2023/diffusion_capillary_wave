@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10",
+  "scientific_goal": "Find a stable 0p10 Neural SDE that jointly matches long-rollout energy, modal amplitudes and means, temporal decorrelation, and the spatial-mean and fluctuation PSD shapes, especially the mid-frequency mismatch.",
+  "scientific_constraints": [
+    "Tune and select only on validation repetitions 13 and 14; reserve test repetitions 15 and 16.",
+    "Treat one-step NLL, rollout stability, energy/amplitude, mean/covariance, and PSD shape as separate evidence.",
+    "Do not use endpoint mean or variance losses in this campaign.",
+    "Prefer matched hypothesis tests; abandon scalar tuning when evidence indicates model or data mismatch.",
+    "Use the exact same rollout seed and validation protocol within each fidelity tier."
+  ],
+  "budget": {"max_training_trials": 8, "max_confirmations": 2},
+  "max_overrides_per_trial": 5,
+  "base_train_options": {
+    "--experiment": "0p10",
+    "--rank": 20,
+    "--validation-reps": [13, 14],
+    "--test-reps": [15, 16],
+    "--spatial-mean-highpass-hz": 50,
+    "--state-variable": "velocity",
+    "--lag": 1,
+    "--history-offsets": [1],
+    "--hidden-layers": [64, 64],
+    "--activation": "silu",
+    "--drift-type": "damped_residual",
+    "--damped-operator": "spsd",
+    "--stiffness-init": 0.01,
+    "--damping-init": 0.01,
+    "--diffusion-type": "full",
+    "--diffusion-init": 0.1,
+    "--train-trim-percent": 5,
+    "--multistep-weight": 0.1,
+    "--multistep-target": "velocity",
+    "--multistep-horizons": [2, 5, 10, 20],
+    "--multistep-mode-counts": [20, 20, 10, 3],
+    "--multistep-particle-counts": [64, 64, 32, 16],
+    "--multistep-window-fraction": 0.1,
+    "--multistep-window-sampling": "batches",
+    "--multistep-validation-seed": 0,
+    "--learning-rate": 0.001,
+    "--batch-size": 256,
+    "--epochs": 5,
+    "--seed": 0
+  },
+  "allowed_overrides": {
+    "--train-trim-percent": [[0], [1], [2.5], [5], [7.5]],
+    "--history-offsets": [[1], [1, 2], [1, 2, 5]],
+    "--diffusion-type": [["full"], ["bounded_state_diagonal"]],
+    "--diffusion-log-range": [null, [0.25], [0.5], [1.0]],
+    "--damped-operator": [["diagonal"], ["spsd"]],
+    "--multistep-weight": [[0], [0.01], [0.03], [0.1]],
+    "--multistep-horizons": [[2, 5], [2, 5, 10, 20], [20], [50]],
+    "--multistep-mode-counts": [null, [20, 20], [20, 20, 10, 3], [3], [5]],
+    "--multistep-particle-counts": [null, [64, 64], [64, 64, 32, 16], [32], [16]],
+    "--multistep-window-fraction": [[0.02], [0.05], [0.1], [1.0]],
+    "--learning-rate": [[0.0001], [0.0003], [0.001]],
+    "--epochs": [[3], [5]]
+  },
+  "screen": {
+    "horizon": 10000,
+    "conditions": 5,
+    "ensemble_size": 3,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "confirmation": {
+    "horizon": 50000,
+    "conditions": 5,
+    "ensemble_size": 5,
+    "seed": 814,
+    "nperseg": 1024,
+    "modal_psd_modes": [1, 2, 3, 4, 5, 10, 20]
+  },
+  "seed_runs": [
+    {
+      "id": "short_multistep_parent",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_multistep_h2_5_10_20_modes20_20_10_3_damped_residual_spsd_full_diffusion_hp50_e5",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_multistep_h2_5_10_20_modes20_20_10_3_damped_residual_spsd_full_diffusion_hp50_e5/rollout_50000_validation",
+      "hypothesis": "Reduced-mode short multistep likelihood controls excess low-mode energy without the severe overdamping of full long-horizon likelihoods.",
+      "change_family": "multistep"
+    },
+    {
+      "id": "weak_h50_finetune",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_h50_m3_w0p01_separate_sampler_finetune",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_h50_m3_w0p01_separate_sampler_finetune/rollout_50000",
+      "hypothesis": "A weak separate H50 loss on three leading modes improves amplitude without full long-horizon overdamping.",
+      "change_family": "multistep"
+    },
+    {
+      "id": "endpoint_moments_reference",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_endpoint_moments_h500_m30",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_endpoint_moments_h500_m30/rollout_50000_validation",
+      "hypothesis": "Endpoint moments improve marginal amplitude but cannot identify spectral shape.",
+      "change_family": "diagnostic_only"
+    },
+    {
+      "id": "history12_untrimmed_failure",
+      "run_dir": "runs/comparison/neural_sde_0p10_r20_velocity_history_1_2_untrimmed_multistep_h2_5_10_20_modes20_20_10_3_damped_residual_spsd_full_diffusion_hp50_e5",
+      "rollout_dir": "runs/comparison/neural_sde_0p10_r20_velocity_history_1_2_untrimmed_multistep_h2_5_10_20_modes20_20_10_3_damped_residual_spsd_full_diffusion_hp50_e5/rollout_50000",
+      "hypothesis": "Removing trimming while adding one history offset tests whether excluded coherent dynamics caused the 0p10 mismatch.",
+      "change_family": "trimming_and_history_failed_combination"
+    }
+  ],
+  "advisor": {"mode": "codex", "command": "codex", "model": null}
+}

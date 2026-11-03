@@ -103,6 +103,8 @@ def velocity_reference_training_trim_mask(rollout, specification):
         validation_reps=saved["validation_reps"], test_reps=saved["test_reps"],
         include_spatial_mean=rollout.include_spatial_mean,
         spatial_mean_highpass_hz=rollout.spatial_mean_highpass_hz,
+        downsample_factor=saved.get("downsample_factor", 1),
+        downsample_edge_trim=saved.get("downsample_edge_trim", 32),
     )
     if data.n_coordinates != rollout.reference.shape[-1]:
         raise ValueError("Recovered source coordinate count does not match rollout.")
@@ -463,7 +465,10 @@ def quick_summary(report):
     ratio = untrimmed["generated_over_reference"]
     excess = None if ratio is None else 100 * (ratio - 1)
     statistics = report["coefficient_statistics"]
-    pod = statistics.get("pod_fluctuation_coordinates", statistics)["untrimmed"]
+    pod_populations = statistics.get("pod_fluctuation_coordinates", statistics)
+    pod = pod_populations["untrimmed"]
+    pod_trimmed = pod_populations.get(
+        "generated_untrimmed_vs_reference_training_trimmed")
 
     central = (f"**Central result:** generated quadratic energy is {_number(excess)}% above "
                "the untrimmed reference.")
@@ -479,32 +484,53 @@ def quick_summary(report):
         "",
         central,
         "",
+        "## Energy",
+        "",
         "| Quantity | Generated/reference result |",
         "|---|---:|",
         (f"| Mean quadratic energy, both untrimmed | "
          f"{_number(untrimmed['generated']['mean_J'])} / "
          f"{_number(untrimmed['reference']['mean_J'])} J = **{_number(ratio)}×** |"),
-        (f"| POD mean bias / reference RMS | "
-         f"**{_number(pod['mean_bias_relative_to_reference_rms'])}** |"),
-        (f"| POD covariance trace | "
-         f"**{_number(pod['covariance_trace_ratio'])}×** |"),
-        (f"| POD covariance relative Frobenius error | "
-         f"**{_number(pod['covariance_relative_frobenius_error'])}** |"),
     ]
-    if "spatial_mean_coordinate" in statistics:
-        spatial_mean = statistics["spatial_mean_coordinate"]["untrimmed"]
-        lines.extend([
-            (f"| Spatial-mean bias / reference RMS | "
-             f"**{_number(spatial_mean['mean_bias_relative_to_reference_rms'])}** |"),
-            (f"| Spatial-mean variance | "
-             f"**{_number(spatial_mean['covariance_trace_ratio'])}×** |"),
-        ])
     if trimmed is not None:
-        lines.insert(7,
+        lines.append(
             (f"| Mean quadratic energy, generated untrimmed / reference training-trimmed | "
              f"{_number(trimmed['generated']['mean_J'])} / "
              f"{_number(trimmed['reference']['mean_J'])} J = "
              f"**{_number(trimmed_ratio)}×** |"))
+
+    trimmed_label = "Training-trimmed reference" if pod_trimmed is not None else "Not available"
+    lines.extend([
+        "",
+        "## Reduced-coordinate moments",
+        "",
+        "Generated trajectories are untrimmed in both columns.",
+        "",
+        f"| Quantity | Full reference | {trimmed_label} |",
+        "|---|---:|---:|",
+        (f"| POD mean bias / reference RMS | "
+         f"**{_number(pod['mean_bias_relative_to_reference_rms'])}** | "
+         f"**{_number(None if pod_trimmed is None else pod_trimmed['mean_bias_relative_to_reference_rms'])}** |"),
+        (f"| POD covariance trace | "
+         f"**{_number(pod['covariance_trace_ratio'])}×** | "
+         f"**{_number(None if pod_trimmed is None else pod_trimmed['covariance_trace_ratio'])}×** |"),
+        (f"| POD covariance relative Frobenius error | "
+         f"**{_number(pod['covariance_relative_frobenius_error'])}** | "
+         f"**{_number(None if pod_trimmed is None else pod_trimmed['covariance_relative_frobenius_error'])}** |"),
+    ])
+    if "spatial_mean_coordinate" in statistics:
+        spatial_populations = statistics["spatial_mean_coordinate"]
+        spatial_mean = spatial_populations["untrimmed"]
+        spatial_trimmed = spatial_populations.get(
+            "generated_untrimmed_vs_reference_training_trimmed")
+        lines.extend([
+            (f"| Spatial-mean bias / reference RMS | "
+             f"**{_number(spatial_mean['mean_bias_relative_to_reference_rms'])}** | "
+             f"**{_number(None if spatial_trimmed is None else spatial_trimmed['mean_bias_relative_to_reference_rms'])}** |"),
+            (f"| Spatial-mean variance | "
+             f"**{_number(spatial_mean['covariance_trace_ratio'])}×** | "
+             f"**{_number(None if spatial_trimmed is None else spatial_trimmed['covariance_trace_ratio'])}×** |"),
+        ])
 
     lines.extend(["", "## Half-decade PSD comparison", "",
                   "| Signal | Mean absolute log-power error | Approx. factor |",

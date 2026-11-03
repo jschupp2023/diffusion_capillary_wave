@@ -32,6 +32,7 @@ DEFAULT_MODES = (0, 1, 2, 3, 4, 10, 20)
 FIGURE_SIZE = (6.0, 8.5)
 TICK_LABEL_SIZE = 15
 AXIS_LABEL_SIZE = 24
+X_TICK_STEP = 50
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,7 +142,9 @@ def plot_window(
             spine.set_linewidth(1.3)
 
     axes[-1, 0].set_xlim(int(steps[0]), int(steps[-1]))
-    axes[-1, 0].set_xticks(np.arange(steps[0], steps[-1] + 1, 20))
+    axes[-1, 0].set_xticks(
+        np.arange(steps[0], steps[-1] + 1, X_TICK_STEP)
+    )
     axes[-1, 0].set_xlabel("Time step", fontsize=AXIS_LABEL_SIZE, labelpad=10)
     figure.subplots_adjust(
         left=0.16,

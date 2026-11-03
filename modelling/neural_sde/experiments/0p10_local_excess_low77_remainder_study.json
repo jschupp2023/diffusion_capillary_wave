@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_local_excess_low77_remainder_v1",
+  "workflow_module": "modelling.frequency_hybrid.local_excess_remainder",
+  "preparation_uses_oscillators": true,
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_local_excess_rank1_low77_v1/evaluation",
+  "total_timeout_seconds": 10800,
+  "training_timeout_seconds": 2400,
+  "evaluation_timeout_seconds": 1200,
+  "scientific_goal": "Add the omitted 77 Hz rank-one complex oscillator and identify a modestly better neural model for the resulting smoother broadband remainder at learned diffusion scale 1.",
+  "constraints": [
+    "Use repetitions 1-12 for fitting and training, 13-14 for validation, and keep 15-16 locked.",
+    "Use the exact eleven-component decomposition and the same frozen oscillator bank in every arm.",
+    "Evaluate every scientific candidate at diffusion scale 1.0 with identical 60000-step validation rollouts.",
+    "Compare architecture and calibration changes against a fresh TCN63 NLL control on the new remainder.",
+    "Prefer the smallest model that improves energy, PSD shape, increment variance and ACF without losing finite rollout stability."
+  ],
+  "arms": [
+    {
+      "id": "tcn63_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Matched five-epoch TCN63 control on the new eleven-peak remainder.",
+      "options": ["--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5"]
+    },
+    {
+      "id": "tcn63_nll_e8",
+      "mode": "finetune",
+      "parent": "tcn63_nll_e5",
+      "description": "Three additional low-rate NLL epochs to test whether the remainder fit was simply under-converged.",
+      "options": ["--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0", "--learning-rate", "0.00001", "--epochs", "3"]
+    },
+    {
+      "id": "tcn63_variance_e3",
+      "mode": "finetune",
+      "parent": "tcn63_nll_e5",
+      "description": "Preserve one-step NLL while applying stronger endpoint-variance calibration at 20, 100 and 300 steps.",
+      "options": ["--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0.01", "--stationary-mean-horizons", "20", "100", "300", "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125", "--learning-rate", "0.00001", "--epochs", "3"]
+    },
+    {
+      "id": "tcn15_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Short-memory TCN control for a remainder expected to be mostly broadband.",
+      "options": ["--tcn-context-frames", "15", "--tcn-dilations", "1", "2", "4", "--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5", "--seed", "21"]
+    },
+    {
+      "id": "mlp_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Memory-light MLP control to test whether temporal convolution is still needed after peak removal.",
+      "options": ["--residual-architecture", "mlp", "--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5", "--seed", "31"]
+    }
+  ],
+  "evaluation": {
+    "horizon": 60000,
+    "conditions": 2,
+    "ensemble": 4,
+    "seed": 51,
+    "device": "cuda",
+    "diffusion_scales": [1.0]
+  }
+}

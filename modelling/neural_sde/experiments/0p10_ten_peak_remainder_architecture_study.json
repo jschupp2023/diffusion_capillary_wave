@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_architectures_v1",
+  "component_manifest": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_v1/data/manifest.json",
+  "oscillators": "runs/diagnostics/frequency_hybrid_0p10_ten_peak_oracle_v1",
+  "stable_parent": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_v1/trials/joint_es_e3/best.pt",
+  "baseline_evaluation": "runs/adaptive/neural_sde_0p10_ten_peak_remainder_v1/trials/joint_es_e3/evaluation_scale1p0",
+  "total_timeout_seconds": 28800,
+  "training_timeout_seconds": 2700,
+  "evaluation_timeout_seconds": 1200,
+  "scientific_goal": "Learn the ten-band remainder with the model's own diffusion calibration at rollout scale 1, while retaining finite long rollouts, accurate full-hybrid energy and broadband PSD, and oscillator peak recovery.",
+  "constraints": [
+    "Use training repetitions 1-12 and validation repetitions 13-14 only; keep test repetitions 15-16 locked.",
+    "Use the identical rank-10 remainder cache, preprocessing, scaling and frozen ten-oscillator bank for every arm.",
+    "Evaluate and select only at learned diffusion scale 1.0; no evaluation-only diffusion rescaling is allowed.",
+    "NLL-only stages are optimization parents and are not scientific candidates.",
+    "Primary selection order is finite 60000-step rollouts, filtered-hybrid energy, overall center PSD shape, and peak contrast recovery. ACF, increments and cross-spectral error are secondary.",
+    "Output filtering remains an offline stationary-generation operation and is applied identically to every candidate.",
+    "Continue after individual training or rollout failures and retain their logs."
+  ],
+  "fresh_base": [
+    "--experiment", "0p10", "--rank", "10",
+    "--validation-reps", "13", "14", "--test-reps", "15", "16",
+    "--spatial-mean-highpass-hz", "50", "--state-variable", "velocity", "--lag", "1",
+    "--history-offsets", "1", "--drift-type", "damped_residual",
+    "--damped-operator", "diagonal", "--stiffness-init", "0.01", "--damping-init", "0.01",
+    "--hidden-layers", "64", "64", "--activation", "silu",
+    "--diffusion-init", "0.1", "--train-mode", "joint", "--train-trim-percent", "0",
+    "--batch-size", "256", "--indexed-training-batches", "--device", "cuda"
+  ],
+  "arms": [
+    {
+      "id": "tcn63_velocity_calibration",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Test whether velocity-focused energy score and stronger endpoint variance pressure make the existing stable TCN learn its missing diffusion amplitude.",
+      "options": [
+        "--seed", "11", "--learning-rate", "0.00001", "--epochs", "3",
+        "--tcn-rollout-cache", "--no-tcn-rollout-compile",
+        "--multistep-weight", "0.6", "--multistep-objective", "energy_score",
+        "--multistep-target", "velocity", "--multistep-horizons", "20", "100", "300",
+        "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005",
+        "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion",
+        "--stationary-mean-weight", "0.01", "--stationary-variance-weight", "0.003",
+        "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64",
+        "--stationary-mean-batch-fraction", "0.0125"
+      ]
+    },
+    {
+      "id": "tcn63_joint_variance",
+      "mode": "finetune_external",
+      "parent": "stable_parent",
+      "evaluate": true,
+      "description": "Retain the successful joint energy score while increasing variance calibration by one order of magnitude.",
+      "options": [
+        "--seed", "12", "--learning-rate", "0.00001", "--epochs", "3",
+        "--tcn-rollout-cache", "--no-tcn-rollout-compile",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score",
+        "--multistep-target", "joint", "--multistep-horizons", "20", "100", "300",
+        "--multistep-particle-counts", "4", "4", "4", "--multistep-window-fraction", "0.005",
+        "--multistep-window-sampling", "batches", "--multistep-gradient-groups", "drift", "diffusion",
+        "--stationary-mean-weight", "0.03", "--stationary-variance-weight", "0.01",
+        "--stationary-mean-horizons", "20", "50", "100", "--stationary-mean-trajectories", "64",
+        "--stationary-mean-batch-fraction", "0.0125"
+      ]
+    },
+    {
+      "id": "tcn15_nll_parent",
+      "mode": "fresh",
+      "evaluate": false,
+      "description": "Short-history TCN one-step parent.",
+      "options": [
+        "--residual-architecture", "tcn", "--tcn-context-frames", "15", "--tcn-channels", "64",
+        "--tcn-kernel-size", "3", "--tcn-dilations", "1", "2", "4",
+        "--diffusion-type", "diagonal", "--tcn-rollout-cache", "--no-tcn-rollout-compile",
+        "--multistep-weight", "0", "--stationary-mean-weight", "0",
+        "--stationary-variance-weight", "0", "--learning-rate", "0.0001", "--epochs", "5", "--seed", "21"
+      ]
+    },
+    {
+      "id": "tcn15_joint_calibration",
+      "mode": "finetune",
+      "parent": "tcn15_nll_parent",
+      "evaluate": true,
+      "description": "Test whether the filtered broadband remainder needs only a short temporal receptive field.",
+      "options": [
+        "--seed", "22", "--learning-rate", "0.00001", "--epochs", "3",
+        "--tcn-rollout-cache", "--no-tcn-rollout-compile",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "20", "100", "300", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.03",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "20", "50", "100",
+        "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125"
+      ]
+    },
+    {
+      "id": "mlp_diagonal_nll_parent",
+      "mode": "fresh",
+      "evaluate": false,
+      "description": "Memory-light MLP with constant diagonal diffusion one-step parent.",
+      "options": [
+        "--residual-architecture", "mlp", "--diffusion-type", "diagonal",
+        "--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0",
+        "--learning-rate", "0.0001", "--epochs", "5", "--seed", "31"
+      ]
+    },
+    {
+      "id": "mlp_diagonal_joint_calibration",
+      "mode": "finetune",
+      "parent": "mlp_diagonal_nll_parent",
+      "evaluate": true,
+      "description": "Test whether a memory-light MLP leaves the broadband uncertainty to the learned diffusion more cleanly than a TCN.",
+      "options": [
+        "--seed", "32", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "20", "100", "300", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.03",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "20", "50", "100",
+        "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125"
+      ]
+    },
+    {
+      "id": "mlp_full_nll_parent",
+      "mode": "fresh",
+      "evaluate": false,
+      "description": "Memory-light MLP with constant full diffusion one-step parent.",
+      "options": [
+        "--residual-architecture", "mlp", "--diffusion-type", "full",
+        "--multistep-weight", "0", "--stationary-mean-weight", "0", "--stationary-variance-weight", "0",
+        "--learning-rate", "0.0001", "--epochs", "5", "--seed", "41"
+      ]
+    },
+    {
+      "id": "mlp_full_joint_calibration",
+      "mode": "finetune",
+      "parent": "mlp_full_nll_parent",
+      "evaluate": true,
+      "description": "Test whether correlated constant noise improves remainder energy and cross-spectral structure without temporal memory.",
+      "options": [
+        "--seed", "42", "--learning-rate", "0.00001", "--epochs", "3",
+        "--multistep-weight", "0.3", "--multistep-objective", "energy_score", "--multistep-target", "joint",
+        "--multistep-horizons", "20", "100", "300", "--multistep-particle-counts", "4", "4", "4",
+        "--multistep-window-fraction", "0.005", "--multistep-window-sampling", "batches",
+        "--multistep-gradient-groups", "drift", "diffusion", "--stationary-mean-weight", "0.03",
+        "--stationary-variance-weight", "0.003", "--stationary-mean-horizons", "20", "50", "100",
+        "--stationary-mean-trajectories", "64", "--stationary-mean-batch-fraction", "0.0125"
+      ]
+    }
+  ],
+  "screen": {"horizon": 60000, "conditions": 1, "ensemble": 4, "seed": 71, "device": "cuda"},
+  "confirmation": {"count": 2, "horizon": 60000, "conditions": 2, "ensemble": 8, "seed": 171, "device": "cuda"}
+}

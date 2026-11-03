@@ -19,6 +19,12 @@ Transitions preserve history and never cross repetitions. cache_coordinates
 optionally keeps train/validation coordinates in RAM within a size budget;
 otherwise data are projected in bounded blocks. No files are written.
 
+downsample_factor > 1 applies a centered anti-alias FIR independently to each
+coordinate and repetition, then decimates and excludes downsample_edge_trim
+coarse samples per edge (default 32). All public indices, frame_counts and
+native_dt then refer to this prepared grid; raw_native_dt/raw_frame_counts
+retain the source sampling. Filtering precedes normalization and differencing.
+
 For consumers outside ACDM, prepare_training_data fits a training-only scaler
 and iter_batches returns standardized coordinates (float32 by default).
 ACDM reads physical transitions and applies its own normalization once.
@@ -32,6 +38,7 @@ import re
 
 import h5py
 import numpy as np
+from scipy.signal import firwin, resample_poly
 
 from modelling.data_preparation.shared_pod_basis import DEFAULT_DATA_ROOT, PREPROCESSING_FLAGS
 
@@ -192,11 +199,25 @@ class SharedPODTrainingData:
     def __init__(self, experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
                  shared_basis=None, validation_reps=None, test_reps=None, batch_size=2048,
                  output_dtype="float32", include_spatial_mean=True,
-                 spatial_mean_highpass_hz=None):
+                 spatial_mean_highpass_hz=None, downsample_factor=1,
+                 downsample_edge_trim=32):
         if not isinstance(rank, (int, np.integer)) or rank < 1:
             raise ValueError("Rank must be a positive integer.")
         if not isinstance(batch_size, (int, np.integer)) or batch_size < 1:
             raise ValueError("Batch size must be a positive integer.")
+        if (isinstance(downsample_factor, (bool, np.bool_))
+                or not isinstance(downsample_factor, (int, np.integer)) or downsample_factor < 1):
+            raise ValueError("downsample_factor must be a positive integer.")
+        if (isinstance(downsample_edge_trim, (bool, np.bool_))
+                or not isinstance(downsample_edge_trim, (int, np.integer))
+                or downsample_edge_trim < 0
+                or (downsample_factor > 1 and downsample_edge_trim < 10)):
+            raise ValueError("downsample_edge_trim must be a nonnegative integer, at least 10 when downsampling.")
+        self.downsample_factor = int(downsample_factor)
+        self.downsample_edge_trim = int(downsample_edge_trim)
+        self._downsample_fir = (firwin(20 * self.downsample_factor + 1,
+                                      1 / self.downsample_factor, window=("kaiser", 5.0))
+                                if self.downsample_factor > 1 else None)
         if not experiment or Path(experiment).name != experiment or experiment in (".", ".."):
             raise ValueError("Experiment must be a single folder name.")
         self.output_dtype = np.dtype(output_dtype)
@@ -302,6 +323,30 @@ class SharedPODTrainingData:
         self.native_dt = intervals[0]
         if not np.allclose(intervals, self.native_dt, rtol=1e-4, atol=0):
             raise ValueError("Repetitions must have the same sampling interval.")
+        self.raw_native_dt = self.native_dt
+        self.raw_frame_counts = self.frame_counts.copy()
+        if self.downsample_factor > 1:
+            q = self.downsample_factor
+            self.native_dt *= q  # All consumers operate on the prepared sampling grid.
+            self.frame_counts = {name: (count + q - 1) // q - 2 * self.downsample_edge_trim
+                                 for name, count in self.raw_frame_counts.items()}
+            if min(self.frame_counts.values()) < 2:
+                raise ValueError("Repetitions are too short after downsampling and filter-edge exclusion.")
+            self.source_config.update(downsample_factor=q, downsample_edge_trim=self.downsample_edge_trim)
+
+    def temporal_preprocessing(self):
+        """Versioned filter and raw-index mapping for checkpoint/rollout provenance."""
+        q = self.downsample_factor
+        return dict(version=1, downsample_factor=q,
+                    method="identity" if q == 1 else "zero_phase_polyphase_fir",
+                    filter_taps=1 if q == 1 else 20 * q + 1,
+                    window=None if q == 1 else ["kaiser", 5.0],
+                    cutoff_hz=None if q == 1 else 1 / (2 * self.native_dt),
+                    edge_trim_prepared_samples=0 if q == 1 else self.downsample_edge_trim,
+                    raw_start_index=0 if q == 1 else q * self.downsample_edge_trim,
+                    raw_dt=self.raw_native_dt, prepared_dt=self.native_dt,
+                    filtering_scope="each repetition independently; all coordinates before differencing",
+                    time_alignment="centered offline filter; not a causal raw-data forecast")
 
     def read_coordinates(self, name, start, stop):
         """Return timestamps and physical float64 coordinates for one interval."""
@@ -310,6 +355,20 @@ class SharedPODTrainingData:
         if name in self._coordinate_cache:
             time, values = self._coordinate_cache[name]
             return time[start:stop], values[start:stop]
+        if self.downsample_factor > 1:
+            q, edge = self.downsample_factor, self.downsample_edge_trim
+            # Aligned halos contain the entire FIR support. Results therefore do
+            # not depend on batch boundaries or require whole-record RAM caches.
+            raw_start = max(0, (start + edge - 10) * q)
+            raw_stop = min(self.raw_frame_counts[name], (stop + edge - 1 + 10) * q + 1)
+            time, values = self._read_native_coordinates(name, raw_start, raw_stop)
+            filtered = resample_poly(values, 1, q, axis=0, window=self._downsample_fir)
+            offset = start + edge - raw_start // q
+            indices = (offset + np.arange(stop - start)) * q
+            return time[indices], filtered[offset:offset + stop - start]
+        return self._read_native_coordinates(name, start, stop)
+
+    def _read_native_coordinates(self, name, start, stop):
         with h5py.File(self.source_paths[name], "r") as source:
             projection = self._projections[name]
             offset = int(self.include_spatial_mean)
@@ -423,6 +482,9 @@ class SharedPODTrainingData:
         if self.spatial_mean_highpass_hz is not None:
             signature["spatial_mean_highpass_hz"] = self.spatial_mean_highpass_hz
             signature["spatial_mean_dataset"] = self.spatial_mean_dataset
+        if self.downsample_factor > 1:
+            signature["temporal_preprocessing"] = self.temporal_preprocessing()
+            signature["prepared_frame_counts"] = self.frame_counts.copy()
         return signature
 
     def _iter_physical_batches(self, split, batch_size):
@@ -433,9 +495,10 @@ class SharedPODTrainingData:
         for record in self._records:
             if record["split"] != split:
                 continue
-            if record["name"] in self._coordinate_cache:
-                for start in range(0, record["n_frames"], batch_size):
-                    time, values = self.read_coordinates(record["name"], start, min(start + batch_size, record["n_frames"]))
+            if self.downsample_factor > 1 or record["name"] in self._coordinate_cache:
+                count = self.frame_counts[record["name"]]
+                for start in range(0, count, batch_size):
+                    time, values = self.read_coordinates(record["name"], start, min(start + batch_size, count))
                     yield record["name"], time, values
                 continue
             with h5py.File(record["path"], "r") as source:
@@ -485,7 +548,8 @@ class SharedPODTrainingData:
 def prepare_training_data(experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
                           shared_basis=None, validation_reps=None, test_reps=None,
                           batch_size=2048, output_dtype="float32", include_spatial_mean=True,
-                          spatial_mean_highpass_hz=None):
+                          spatial_mean_highpass_hz=None, downsample_factor=1,
+                          downsample_edge_trim=32):
     """Return a fitted SharedPODTrainingData for use across training epochs.
 
     One streaming training pass computes scaling in memory. Subsequent calls
@@ -497,4 +561,5 @@ def prepare_training_data(experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
         validation_reps=validation_reps, test_reps=test_reps, batch_size=batch_size,
         output_dtype=output_dtype, include_spatial_mean=include_spatial_mean,
         spatial_mean_highpass_hz=spatial_mean_highpass_hz,
+        downsample_factor=downsample_factor, downsample_edge_trim=downsample_edge_trim,
     ).fit_standardization()

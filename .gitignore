@@ -27,7 +27,9 @@ env/
 /whole_experiments_*/
 /unseen_data_results/
 /main_analysis_results/
-
+/best_models/*
+/BLOB_id_deliverable/*
+/matlab_analysis/*
 # POD data and plots (keep analysis scripts tracked)
 /pod_analysis/*
 !/pod_analysis/*.py
