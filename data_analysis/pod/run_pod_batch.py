@@ -71,6 +71,23 @@ def parse_args() -> argparse.Namespace:
         help="Root of the mirrored output tree (default: current directory).",
     )
     parser.add_argument(
+        "--powers",
+        nargs="+",
+        help="Only these condition directories (e.g. --powers 0p20 or --powers 0p08 0p20).",
+    )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        nargs="+",
+        help="Only these repetition numbers within every selected power.",
+    )
+    parser.add_argument(
+        "--file-pattern",
+        type=str,
+        default=None,
+        help="Optional glob or substring pattern to select input files (e.g. '*cleaned_hp50hz.hdf5').",
+    )
+    parser.add_argument(
         "--rank",
         type=int,
         default=100,
@@ -191,35 +208,58 @@ def discover_jobs(
     input_root: Path,
     output_root: Path,
     rank: int,
+    powers: list[str] | None = None,
+    reps: list[int] | None = None,
+    file_pattern: str | None = None,
 ) -> tuple[list[PodJob], list[DiscoveryIssue]]:
     """Discover valid inputs using the expected two-level directory layout."""
     jobs: list[PodJob] = []
     issues: list[DiscoveryIssue] = []
+
+    if not input_root.exists():
+        issues.append(DiscoveryIssue(directory=input_root, reason="input root does not exist"))
+        return jobs, issues
 
     condition_directories = sorted(
         path
         for path in input_root.iterdir()
         if path.is_dir() and CONDITION_PATTERN.fullmatch(path.name)
     )
+    if powers:
+        condition_directories = [p for p in condition_directories if p.name in powers]
+
     for condition_directory in condition_directories:
         realization_directories = sorted(
             path
             for path in condition_directory.iterdir()
             if path.is_dir() and REALIZATION_PATTERN.fullmatch(path.name)
         )
+        if reps:
+            rep_patterns = tuple(f"_rep{r}" for r in reps)
+            realization_directories = [
+                p for p in realization_directories if any(p.name.endswith(pat) or pat in p.name for pat in rep_patterns)
+            ]
+
         for realization_directory in realization_directories:
-            input_files = sorted(
+            candidates = sorted(
                 path
                 for path in realization_directory.iterdir()
                 if path.is_file() and path.suffix.lower() in HDF5_SUFFIXES
             )
-            if len(input_files) != 1:
+            # Ignore existing POD outputs so they are never treated as raw/cleaned inputs
+            candidates = [p for p in candidates if not p.name.startswith("pod_2d_")]
+            if file_pattern:
+                candidates = [
+                    p for p in candidates if p.match(file_pattern) or file_pattern in p.name
+                ]
+
+            if len(candidates) != 1:
                 issues.append(
                     DiscoveryIssue(
                         directory=realization_directory,
                         reason=(
-                            "expected exactly one direct .h5/.hdf5 file; "
-                            f"found {len(input_files)}"
+                            f"expected exactly one matching input file (pattern: {file_pattern or 'non-pod .h5/.hdf5'}); "
+                            f"found {len(candidates)}"
                         ),
                     )
                 )
@@ -235,7 +275,7 @@ def discover_jobs(
                 PodJob(
                     condition=condition_directory.name,
                     realization=realization_directory.name,
-                    input_path=input_files[0],
+                    input_path=candidates[0],
                     output_path=output_path,
                 )
             )
@@ -355,7 +395,14 @@ def run_batch(args: argparse.Namespace, log: TextIO) -> int:
     if args.blas_threads is not None:
         announce(log, f"BLAS threads per POD process: {args.blas_threads}")
 
-    jobs, issues = discover_jobs(input_root, output_root, args.rank)
+    jobs, issues = discover_jobs(
+        input_root,
+        output_root,
+        args.rank,
+        powers=args.powers,
+        reps=args.reps,
+        file_pattern=args.file_pattern,
+    )
     for issue in issues:
         announce(log, f"SKIP invalid folder {issue.directory}: {issue.reason}")
 

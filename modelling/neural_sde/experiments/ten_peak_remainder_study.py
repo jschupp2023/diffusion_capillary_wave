@@ -53,15 +53,19 @@ def run_study(path,dry_run=False):
     path=Path(path).resolve();study=read_json(path);repo=Path(study['repository'])
     root=repo/study['output_root'];python=study['python'];manifest=root/'data/manifest.json'
     workflow=study.get('workflow_module','modelling.frequency_hybrid.ten_peak_remainder')
-    prep=[python,'-m',workflow,'prepare','--output',str(root)]
+    exp=study.get('experiment','0p10')
+    prep=[python,'-m',workflow,'prepare','--output',str(root),'--experiment',exp]
     if study.get('preparation_uses_oscillators',False):
         prep+=['--oscillators',str(repo/study['oscillators'])]
     commands=[]
+    fresh_base=list(FRESH_BASE)
+    if '--experiment' in fresh_base:
+        fresh_base[fresh_base.index('--experiment')+1]=exp
     for arm in study['arms']:
         run=root/'trials'/arm['id']
         train=[python,'-m','modelling.neural_sde','train']
         if arm['mode']=='fresh':
-            train+=FRESH_BASE+['--temporal-component-manifest',str(manifest),
+            train+=fresh_base+['--temporal-component-manifest',str(manifest),
                               '--temporal-component','remainder']
         else:
             source=(repo/arm['checkpoint'] if arm.get('checkpoint') else

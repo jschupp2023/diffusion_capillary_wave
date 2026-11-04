@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "repository": "/home/jonas/ucsd_thesis/CapillaryWaveTurbulence",
+  "python": "/home/jonas/miniforge3/envs/diff-model-mit/bin/python",
+  "output_root": "runs/adaptive/neural_sde_0p08_local_excess_remainder_v1",
+  "workflow_module": "modelling.frequency_hybrid.local_excess_remainder",
+  "experiment": "0p08",
+  "preparation_uses_oscillators": true,
+  "oscillators": "best_models/0p08/oscillators",
+  "total_timeout_seconds": 7200,
+  "training_timeout_seconds": 1800,
+  "evaluation_timeout_seconds": 900,
+  "normal_rollout_diagnostics": true,
+  "scientific_goal": "Fit and evaluate hybrid frequency models for 0p08 using the 11-band local-excess oscillator bank and test TCN63, TCN15, MLP, and multi-step Energy Score calibrated neural SDE remainder models.",
+  "constraints": [
+    "Identify the eleven complex spatial directions and oscillator parameters from training repetitions 1-12 only; validation repetitions 13-14 are evaluation only and test repetitions 15-16 remain locked.",
+    "Preserve the spatial mean plus ten POD coordinates, native sampling, HP50 spatial-mean preprocessing.",
+    "Define every target exactly as full minus the filtered eleven rank-one complex projections and verify reconstruction before training.",
+    "Keep the complex oscillator bank frozen. Evaluate both raw neural output and output projected through the fixed local-excess complement.",
+    "Judge learnability from long-rollout survival, remainder PSD shape and power, energy, increments and ACF."
+  ],
+  "arms": [
+    {
+      "id": "tcn63_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Standard five-epoch TCN-63 one-step NLL baseline on 0p08 remainder.",
+      "options": ["--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5"]
+    },
+    {
+      "id": "tcn15_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Compact five-epoch TCN-15 short-memory control on 0p08 remainder.",
+      "options": ["--tcn-context-frames", "15", "--tcn-dilations", "1", "2", "4", "--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5", "--seed", "21"]
+    },
+    {
+      "id": "mlp_nll_e5",
+      "mode": "fresh",
+      "parent": null,
+      "description": "Memory-light MLP baseline to test memoryless non-local coupling on remainder.",
+      "options": ["--residual-architecture", "mlp", "--multistep-weight", "0", "--learning-rate", "0.0001", "--epochs", "5", "--seed", "31"]
+    },
+    {
+      "id": "tcn15_joint_es_e3",
+      "mode": "finetune",
+      "parent": "tcn15_nll_e5",
+      "description": "Three-epoch multi-step joint Energy Score calibration fine-tuned from TCN-15.",
+      "options": ["--multistep-weight", "0.03", "--multistep-objective", "energy_score", "--multistep-target", "joint", "--multistep-horizons", "2", "5", "10", "--multistep-particle-counts", "4", "4", "4", "--learning-rate", "0.00002", "--epochs", "3"]
+    }
+  ],
+  "evaluation": {
+    "horizon": 60000,
+    "conditions": 2,
+    "ensemble": 4,
+    "seed": 41,
+    "device": "cuda",
+    "diffusion_scales": [1.0]
+  }
+}
+
