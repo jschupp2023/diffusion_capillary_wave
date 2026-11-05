@@ -28,8 +28,8 @@ def load_bank(path, *, expected=None):
     for artifact in artifacts:
         with np.load(artifact) as saved:model={key:saved[key] for key in saved.files}
         modes=np.asarray(model['modes'])
-        if modes.shape!=(11,1):
-            raise ValueError(f'{artifact} is not an 11-coordinate rank-one model')
+        if modes.ndim != 2 or modes.shape[1] != 1:
+            raise ValueError(f'{artifact} is not a rank-one model')
         models.append(model)
     return artifacts,models
 
@@ -67,7 +67,8 @@ def remainder_filter(values, models, filters, edge):
     return full-projected
 
 
-def prepare_data(output, oscillators, *, experiment='0p10', include_test=False, edge_seconds=.1):
+def prepare_data(output, oscillators, *, experiment='0p10', include_test=False, edge_seconds=.1,
+                 data_root=None, shared_basis=None, rank=10, spatial_mean_highpass_hz=None):
     output=Path(output).resolve();manifest=output/'data/manifest.json'
     artifacts,models=load_bank(oscillators)
     if manifest.exists():
@@ -76,8 +77,16 @@ def prepare_data(output, oscillators, *, experiment='0p10', include_test=False, 
         if saved.get('local_excess',{}).get('artifact_sha256')!=expected:
             raise ValueError('Existing cache uses different local-excess artifacts')
         print(manifest);return manifest
-    data=SharedPODTrainingData(experiment,10,validation_reps=[13,14],test_reps=[15,16],
-        spatial_mean_highpass_hz=50.,output_dtype='float64')
+    kwargs = dict(
+        data_root=data_root,
+        shared_basis=shared_basis,
+        validation_reps=[13, 14],
+        test_reps=[15, 16],
+        spatial_mean_highpass_hz=spatial_mean_highpass_hz,
+        output_dtype='float64',
+    )
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    data=SharedPODTrainingData(experiment,rank,**kwargs)
     fs=1/data.native_dt;filters=bank_filters(models,fs)
     edge=max(int(np.ceil(edge_seconds*fs)),*(settling_samples(sos,fs) for sos in filters))
     target=output/'data';target.mkdir(parents=True,exist_ok=False)
@@ -212,6 +221,10 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__);sub=parser.add_subparsers(dest='command',required=True)
     prep=sub.add_parser('prepare');prep.add_argument('--output',type=Path,required=True)
     prep.add_argument('--oscillators',type=Path,required=True);prep.add_argument('--experiment',default='0p10')
+    prep.add_argument('--rank',type=int,default=10)
+    prep.add_argument('--data-root',type=Path,default=None)
+    prep.add_argument('--shared-basis',type=Path,default=None)
+    prep.add_argument('--spatial-mean-highpass-hz',type=float,default=None)
     prep.add_argument('--include-test',action='store_true')
     ev=sub.add_parser('evaluate');ev.add_argument('--checkpoint',type=Path,required=True)
     ev.add_argument('--output',type=Path,required=True);ev.add_argument('--study',type=Path,required=True)
@@ -223,7 +236,10 @@ def main():
     aug.add_argument('--output',type=Path,required=True);aug.add_argument('--study',type=Path,required=True)
     aug.add_argument('--oscillator',type=Path,required=True);aug.add_argument('--seed',type=int,default=1551)
     args=parser.parse_args();torch.set_num_threads(1)
-    if args.command=='prepare':prepare_data(args.output,args.oscillators,experiment=args.experiment,include_test=args.include_test)
+    if args.command=='prepare':prepare_data(args.output,args.oscillators,experiment=args.experiment,
+                                            rank=args.rank,data_root=args.data_root,shared_basis=args.shared_basis,
+                                            spatial_mean_highpass_hz=args.spatial_mean_highpass_hz,
+                                            include_test=args.include_test)
     elif args.command=='evaluate':
         evaluate(args.checkpoint,args.output,args.study,args.oscillators,args.horizon,
                  args.conditions,args.ensemble,args.seed,args.device,args.diffusion_scale)

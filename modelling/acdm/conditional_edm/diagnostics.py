@@ -8,10 +8,11 @@ from modelling.acdm.experiments.rollout_benchmark import RolloutBenchmark
 from .evaluate import reference_windows
 
 
-def energy_report(generated, reference, stiffness, z_scale, n_space, factor):
+def energy_report(generated, reference, stiffness, z_scale, n_space, factor,
+                  pod_coordinate_offset=1, spatial_mean_weights=None):
     """Quadratic fluctuation energy; nonfinite trajectories count as failures."""
     def energies(values):
-        coefficients = values[..., 1:].astype(np.float64) * z_scale
+        coefficients = values[..., pod_coordinate_offset:].astype(np.float64) * z_scale
         with np.errstate(over="ignore", invalid="ignore"):
             return .5 * np.einsum("...i,ij,...j->...", coefficients, stiffness, coefficients, optimize=True)
 
@@ -20,7 +21,13 @@ def energy_report(generated, reference, stiffness, z_scale, n_space, factor):
     finite = np.isfinite(generated).all(-1) & np.isfinite(g)
     failed = ~finite | (g > threshold)
     first = [int(np.flatnonzero(row)[0]) if row.any() else None for row in failed.reshape(-1, failed.shape[-1])]
-    drift = np.abs(generated[..., 0] - generated[..., :1, 0]) * z_scale / np.sqrt(n_space)
+    if pod_coordinate_offset:
+        mean = generated[..., 0] / np.sqrt(n_space)
+    elif spatial_mean_weights is not None:
+        mean = generated.astype(np.float64) @ np.asarray(spatial_mean_weights)
+    else:
+        mean = np.zeros(generated.shape[:-1])
+    drift = np.abs(mean - mean[..., :1]) * z_scale
 
     def number(value):
         return float(value) if np.isfinite(value) else None
@@ -36,11 +43,13 @@ def energy_report(generated, reference, stiffness, z_scale, n_space, factor):
                 max_spatial_mean_drift_m=number(drift.max()))
 
 
-def one_step_statistics(samples, current, target):
+def one_step_statistics(samples, current, target, pod_coordinate_offset=1,
+                        spatial_mean_weights=None):
     """Teacher-forced conditional statistics in physical reduced coordinates."""
     if samples.ndim != 3 or samples.shape[0] != len(current) or samples.shape[2] != current.shape[1]:
         raise ValueError("samples must have shape [condition, ensemble, coordinate]")
-    if current.shape != target.shape or current.ndim != 2 or current.shape[1] < 2:
+    if (current.shape != target.shape or current.ndim != 2
+            or current.shape[1] < 1 + pod_coordinate_offset):
         raise ValueError("current and target must be matching reduced states with a POD block")
     mean = samples.mean(1)
     variance = samples.var(1, correction=0)
@@ -53,27 +62,46 @@ def one_step_statistics(samples, current, target):
     def ratio(spread, error):
         return scalar(spread.sum() / error.sum().clamp_min(tiny))
 
-    current_pod, target_pod = current[:, 1:], target[:, 1:]
-    mean_pod, variance_pod = mean[:, 1:], variance[:, 1:]
+    current_pod = current[:, pod_coordinate_offset:]
+    target_pod = target[:, pod_coordinate_offset:]
+    mean_pod = mean[:, pod_coordinate_offset:]
+    variance_pod = variance[:, pod_coordinate_offset:]
     pod_mean_map = mean_pod.square().sum(-1) - current_pod.square().sum(-1)
     pod_stochastic = variance_pod.sum(-1)
     pod_data = target_pod.square().sum(-1) - current_pod.square().sum(-1)
-    mean_map = mean[:, 0].square() - current[:, 0].square()
-    stochastic = variance[:, 0]
-    mean_data = target[:, 0].square() - current[:, 0].square()
+    if pod_coordinate_offset:
+        current_mean, target_mean, predicted_mean = current[:, 0], target[:, 0], mean[:, 0]
+        predicted_mean_variance = variance[:, 0]
+        mean_error2 = error2[:, 0]
+    else:
+        if spatial_mean_weights is None:
+            raise ValueError("Embedded spatial-mean diagnostics require mode mean weights.")
+        weights = torch.as_tensor(spatial_mean_weights, dtype=samples.dtype,
+                                  device=samples.device)
+        current_mean = current @ weights
+        target_mean = target @ weights
+        predicted_mean = mean @ weights
+        predicted_mean_variance = (samples @ weights).var(1, correction=0)
+        mean_error2 = (predicted_mean - target_mean).square()
+    mean_map = predicted_mean.square() - current_mean.square()
+    stochastic = predicted_mean_variance
+    mean_data = target_mean.square() - current_mean.square()
     return {
         "conditions": len(current),
         "ensemble_size": samples.shape[1],
-        "coordinate_order": "sqrt(N)*spatial_mean, shared POD coefficients",
+        "coordinate_order": ("sqrt(N)*spatial_mean, shared POD coefficients"
+                             if pod_coordinate_offset else
+                             "shared POD coefficients with spatial mean embedded"),
         "variance_estimator": "ensemble population variance (correction=0)",
         "conditional_mean_rmse": {
-            "spatial_mean": scalar(error2[:, 0].mean().sqrt()),
-            "pod": scalar(error2[:, 1:].mean().sqrt()),
+            "spatial_mean": scalar(mean_error2.mean().sqrt()),
+            "pod": scalar(error2[:, pod_coordinate_offset:].mean().sqrt()),
             "full": scalar(error2.mean().sqrt()),
         },
         "spread_ratio": {
-            "spatial_mean": ratio(variance[:, 0], error2[:, 0]),
-            "pod": ratio(variance[:, 1:], error2[:, 1:]),
+            "spatial_mean": ratio(predicted_mean_variance, mean_error2),
+            "pod": ratio(variance[:, pod_coordinate_offset:],
+                         error2[:, pod_coordinate_offset:]),
         },
         "pod_amplitude": {
             "model_change": scalar((pod_mean_map + pod_stochastic).mean()),
@@ -163,7 +191,12 @@ class TrainingDiagnostics:
         samples = model.sample_next(
             batch["current_state"], history_states=batch.get("history_states"),
             num_samples=self.config.one_step_ensemble_size, seed=self.seed)
-        return one_step_statistics(samples, batch["current_state"], batch["next_state"])
+        weights = (self.data.spatial_mean_weights * np.sqrt(self.data.n_space)
+                   if not self.data.include_spatial_mean else None)
+        return one_step_statistics(
+            samples, batch["current_state"], batch["next_state"],
+            pod_coordinate_offset=self.data.pod_coordinate_offset,
+            spatial_mean_weights=weights)
 
     def rollout(self, model):
         if self.stiffness is None:
@@ -191,7 +224,9 @@ class TrainingDiagnostics:
                                       num_trajectories=self.config.rollout_ensemble_size, seed=self.seed).cpu().numpy()
             result[split] = energy_report(generated, reference.numpy(), self.stiffness,
                                           length_scale(self.data.signal_units), self.data.n_space,
-                                          self.config.rollout_energy_factor)
+                                          self.config.rollout_energy_factor,
+                                          pod_coordinate_offset=self.data.pod_coordinate_offset,
+                                          spatial_mean_weights=self.data.spatial_mean_weights)
             result[split].update(repetition=str(names[0]), start_index=int(starts[0]))
             if split == "validation" and self.rollout_benchmark is not None:
                 result["benchmark"] = self.rollout_benchmark._metrics(

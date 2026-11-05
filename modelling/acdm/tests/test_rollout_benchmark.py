@@ -60,6 +60,19 @@ def test_benchmark_penalizes_both_excess_and_missing_energy_and_nonfinite(benchm
     json.dumps(failed, allow_nan=False)
 
 
+def test_benchmark_supports_spatial_mean_embedded_in_pod(embedded_shared_data):
+    benchmark = RolloutBenchmark(
+        embedded_shared_data, horizon=8, conditions=2, ensemble_size=2,
+        max_history_steps=1, nperseg=8)
+    rng = np.random.default_rng(91)
+    reference = rng.normal(size=(2, 9, embedded_shared_data.rank))
+    generated = np.repeat(reference[:, None], 2, axis=1)
+    report = benchmark._metrics(generated, reference, .01)
+    assert report["score"] == pytest.approx(0, abs=1e-10)
+    assert set(report["psd"]) == {
+        "center", "spatial_mean", "center_without_spatial_mean"}
+
+
 def test_benchmark_evaluate_saves_compatible_arrays_and_restores_mode(benchmark, tmp_path):
     config = SimpleNamespace(lag_steps=1, history_conditioning=True, history_steps=2)
     reference, history, _, _, _ = benchmark.reference_windows(config)

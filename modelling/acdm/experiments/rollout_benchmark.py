@@ -35,6 +35,8 @@ class RolloutBenchmark:
                      for a in ("x", "y")]
         self.stiffness, _ = capillary_stiffness(modes, *grids, gamma=surface_tension)
         self.center_modes = modes[:, modes.shape[1] // 2, modes.shape[2] // 2]
+        self.pod_coordinate_offset = data.pod_coordinate_offset
+        self.spatial_mean_weights = modes.reshape(data.rank, -1).mean(axis=1)
         self.surface_tension = surface_tension
         self._windows = {}
 
@@ -73,7 +75,7 @@ class RolloutBenchmark:
         return result
 
     def _energies(self, coordinates):
-        coefficients = coordinates[..., 1:].astype(np.float64) * self.z_scale
+        coefficients = coordinates[..., self.pod_coordinate_offset:].astype(np.float64) * self.z_scale
         with np.errstate(over="ignore", invalid="ignore"):
             values = .5 * np.einsum("...i,ij,...j->...", coefficients, self.stiffness,
                                     coefficients, optimize=True)
@@ -103,11 +105,13 @@ class RolloutBenchmark:
                       reference_mean_J=float(r.mean()), threshold_factor=self.energy_factor)
         signals = {}
         for values, label in ((generated, "generated"), (reference, "reference")):
-            mean = values[..., 0].astype(np.float64) / np.sqrt(self.data.n_space)
+            coefficients = values[..., self.pod_coordinate_offset:].astype(np.float64)
+            mean = self.data.spatial_mean(values).astype(np.float64)
             with np.errstate(over="ignore", invalid="ignore"):
-                fluctuation = values[..., 1:].astype(np.float64) @ self.center_modes
-            signals[label] = dict(center=mean + fluctuation, spatial_mean=mean,
-                                  center_without_spatial_mean=fluctuation)
+                pod_center = coefficients @ self.center_modes
+            center = (mean + pod_center if self.data.include_spatial_mean else pod_center)
+            signals[label] = dict(center=center, spatial_mean=mean,
+                                  center_without_spatial_mean=center - mean)
         spectra, spectral_errors = {}, []
         for name in signals["reference"]:
             reference_psd = [compute_welch(v, 1 / dt, self.nperseg, .5)[0]
@@ -175,7 +179,10 @@ class RolloutBenchmark:
                       source_shared_basis=str(self.data.basis_path), rank=self.data.rank,
                       gamma_N_per_m=self.surface_tension, energy_definition="quadratic; temporal mean field omitted",
                       psd_bands="(0,0.1], (0.1,0.5], (0.5,1] times Nyquist; DC omitted from spectral error",
-                      coordinate_order="sqrt(N)*spatial_mean, shared POD coefficients")
+                      coordinate_order=("sqrt(N)*spatial_mean, shared POD coefficients"
+                                        if self.data.include_spatial_mean else
+                                        "shared POD coefficients with spatial mean embedded"),
+                      spatial_mean_representation=self.data.spatial_mean_representation)
         if save_dir is not None:
             directory = Path(save_dir)
             directory.mkdir(parents=True, exist_ok=True)

@@ -4,8 +4,10 @@
         --rep 9 --rank 20 --timesteps 10000 --modes 0 1 2 3 4 10 20 \
         --increment-lag 3
 
-Coordinate 0 is sqrt(number of spatial points) times the frame spatial mean;
-coordinates 1..rank are the shared POD coefficients. No model is required.
+For legacy data, coordinate 0 is sqrt(number of spatial points) times the
+frame spatial mean and coordinates 1..rank are shared POD coefficients. For
+cleaned full-field POD data, coordinates 0..rank-1 are POD modes 1..rank and
+the spatial mean is embedded in them. No model is required.
 An increment is the difference of two normalized coordinates; it is not
 standardized again by the increment standard deviation.
 """
@@ -24,13 +26,14 @@ from modelling.data_preparation.prepare_shared_pod_training import SharedPODTrai
 from modelling.data_preparation.shared_pod_basis import DEFAULT_DATA_ROOT
 
 
-def _save_plot(path, elapsed, values, modes, title, *, increments=False, start_step=0):
+def _save_plot(path, elapsed, values, modes, title, *, coordinate_labels,
+               increments=False, start_step=0):
     figure, axes = plt.subplots(len(modes), 1, figsize=(11, max(3, 2 * len(modes))),
                                 sharex=True, squeeze=False, constrained_layout=True)
     for axis, mode, series in zip(axes[:, 0], modes, values.T):
         axis.plot(elapsed, series, lw=.8)
         axis.axhline(0, color="0.5", lw=.6)
-        label = "√N × mean (0)" if mode == 0 else f"POD {mode}"
+        label = coordinate_labels[mode]
         axis.set_ylabel(f"Δ {label}" if increments else label)
         axis.grid(alpha=.2)
     axes[-1, 0].set_xlabel(
@@ -110,10 +113,14 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
     data = SharedPODTrainingData(experiment, rank, data_root=data_root,
                                  shared_basis=shared_basis, validation_reps=validation_reps,
                                  test_reps=test_reps).fit_standardization()
-    chosen = ([mode for mode in (0, 1, 2, 3, 4, 10, 20) if mode <= rank]
+    coordinate_labels = ((["√N × mean (0)"] + [f"POD {mode}" for mode in range(1, rank + 1)])
+                         if data.include_spatial_mean else
+                         [f"POD {mode}" for mode in range(1, rank + 1)])
+    chosen = ([mode for mode in (0, 1, 2, 3, 4, 10, 20) if mode < data.n_coordinates]
               if modes is None else list(dict.fromkeys(modes)))
-    if not chosen or any(mode < 0 or mode > rank for mode in chosen):
-        raise ValueError(f"--modes must be coordinate indices from 0 to {rank}.")
+    if not chosen or any(mode < 0 or mode >= data.n_coordinates for mode in chosen):
+        raise ValueError(
+            f"--modes must be coordinate indices from 0 to {data.n_coordinates - 1}.")
     names = [name for name in data.frame_counts if name.endswith(f"_rep{rep}")]
     if len(names) != 1:
         raise ValueError(f"Expected one repetition {rep}; found {len(names)}.")
@@ -140,7 +147,7 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
     selected = normalized[:, chosen]
     _save_plot(output / "normalized_coordinates.png", elapsed, selected, chosen,
                f"{experiment} rep {rep}: normalized shared-POD state, frames {start}–{last_step}",
-               start_step=start)
+               coordinate_labels=coordinate_labels, start_step=start)
     np.savez_compressed(output / "normalized_coordinates.npz",
                         step=np.arange(start, last_step + 1), time_seconds=elapsed,
                         recording_time_seconds=time,
@@ -152,14 +159,14 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
         _save_plot(output / f"normalized_increments_{suffix}.png", elapsed[increment_lag:],
                    increments, chosen,
                    f"{experiment} rep {rep}: normalized shared-POD increments, lag {increment_lag}",
-                   increments=True, start_step=start)
+                   coordinate_labels=coordinate_labels, increments=True, start_step=start)
         np.savez_compressed(output / f"normalized_increments_{suffix}.npz",
                             start_step=end_step - increment_lag, end_step=end_step,
                             time_seconds=elapsed[increment_lag:],
                             recording_time_seconds=time[increment_lag:],
                             modes=np.asarray(chosen),
                             lag_steps=increment_lag, increments=increments)
-        full_normalized = np.empty((data.frame_counts[name], rank + 1), dtype=np.float32)
+        full_normalized = np.empty((data.frame_counts[name], data.n_coordinates), dtype=np.float32)
         for batch_start in range(0, len(full_normalized), 4096):
             batch_stop = min(batch_start + 4096, len(full_normalized))
             _, full_physical = data.read_coordinates(name, batch_start, batch_stop)
@@ -188,7 +195,7 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
             elapsed[increment_lag:], window_score, score_details["threshold"],
             score_details["percentile"],
             (f"{experiment} rep {rep}: lag-{increment_lag} {score_label.lower()} "
-             f"over all {rank + 1} coordinates"), start, score_label,
+             f"over all {data.n_coordinates} coordinates"), start, score_label,
         )
         score_arrays = dict(
             start_step=end_step - increment_lag, end_step=end_step,
@@ -199,7 +206,7 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
             threshold=score_details["threshold"],
             threshold_percentile=score_details["percentile"],
             score_kind=increment_score,
-            coordinate_indices=np.arange(rank + 1),
+            coordinate_indices=np.arange(data.n_coordinates),
             full_trajectory_score=full_score,
             full_trajectory_start_step=np.arange(len(full_score)),
             full_trajectory_end_step=np.arange(increment_lag, len(full_normalized)),
@@ -224,7 +231,9 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
                    dt_seconds=data.native_dt, shared_basis=str(data.basis_path),
                    source=str(data.source_paths[name]),
                    normalization="float32 physical states, then (state - training mean) / training scale",
-                   coordinate_zero="sqrt(number of spatial points) * frame spatial mean",
+                   coordinate_zero=("sqrt(number of spatial points) * frame spatial mean"
+                                    if data.include_spatial_mean else "POD 1"),
+                   spatial_mean_representation=data.spatial_mean_representation,
                    normalization_train_repetitions=list(data.train_repetitions),
                    state_mean=mean.tolist(), state_std=std.tolist())
     if increment_lag is not None:
@@ -233,7 +242,8 @@ def plot_normalized_coordinates(experiment, rep, rank, timesteps, modes=None, *,
                        increment_definition="normalized_state[t + lag] - normalized_state[t]",
                        increment_time_label="ending frame",
                        increment_score=increment_score,
-                       increment_score_coordinates=f"all model-visible coordinates 0..{rank}",
+                       increment_score_coordinates=(
+                           f"all model-visible coordinates 0..{data.n_coordinates - 1}"),
                        increment_score_reference="all valid lagged increments in the complete repetition",
                        increment_score_threshold_percentile=score_details["percentile"],
                        increment_score_threshold=score_details["threshold"],

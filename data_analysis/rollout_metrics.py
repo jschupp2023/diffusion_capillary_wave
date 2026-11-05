@@ -15,7 +15,9 @@ import numpy as np
 from data_analysis.energy.capillary_energy import capillary_stiffness, length_scale
 from data_analysis.energy.rollout_energy import compute_energies
 from data_analysis.psd.compare_psd_band_power import integrate_band, logarithmic_edges
-from data_analysis.psd.rollout_psd import ensemble_psd, fluctuation_signals, point_signals
+from data_analysis.psd.rollout_psd import (
+    embedded_point_signals, ensemble_psd, fluctuation_signals, point_signals,
+)
 from data_analysis.psd.pod_center_psd import select_point
 from data_analysis.rollout import Rollout, add_rollout_arguments, output_directory
 
@@ -102,6 +104,7 @@ def velocity_reference_training_trim_mask(rollout, specification):
         shared_basis=rollout.basis_path,
         validation_reps=saved["validation_reps"], test_reps=saved["test_reps"],
         include_spatial_mean=rollout.include_spatial_mean,
+        spatial_mean_representation=rollout.spatial_mean_representation,
         spatial_mean_highpass_hz=rollout.spatial_mean_highpass_hz,
         downsample_factor=saved.get("downsample_factor", 1),
         downsample_edge_trim=saved.get("downsample_edge_trim", 32),
@@ -373,6 +376,27 @@ def coefficient_statistics(generated, reference, reference_mask,
     return report, arrays
 
 
+def add_embedded_spatial_mean_statistics(report, arrays, generated, reference,
+                                         reference_mask):
+    """Add moments of the derived physical mean without treating it as a coordinate."""
+    untrimmed, reference_trimmed = _moment_populations(
+        generated[..., None], reference[..., None], reference_mask)
+    report["spatial_mean_signal"] = dict(
+        definition=("physical frame spatial mean derived as the linear combination "
+                    "of all retained POD coefficients and mode spatial averages"),
+        untrimmed=_json_moments(untrimmed),
+        generated_untrimmed_vs_reference_training_trimmed=(
+            None if reference_trimmed is None else _json_moments(reference_trimmed)),
+    )
+    arrays.update(
+        generated_covariance_spatial_mean_signal=untrimmed["_generated_covariance"],
+        reference_covariance_spatial_mean_signal=untrimmed["_reference_covariance"],
+    )
+    if reference_trimmed is not None:
+        arrays["reference_covariance_spatial_mean_signal_training_trimmed"] = (
+            reference_trimmed["_reference_covariance"])
+
+
 def _band_metrics(frequency, generated_density, reference_density, lower_frequency,
                   bins_per_decade):
     positive = frequency > 0
@@ -430,6 +454,9 @@ def psd_comparison(rollout, *, point=None, nperseg=1024, overlap=.5,
     if rollout.include_spatial_mean:
         generated = point_signals(rollout.generated, rollout.modes, rollout.n_space, selected)
         reference = point_signals(rollout.reference, rollout.modes, rollout.n_space, selected)
+    elif rollout.spatial_mean_available:
+        generated = embedded_point_signals(rollout.generated, rollout.modes, selected)
+        reference = embedded_point_signals(rollout.reference, rollout.modes, selected)
     else:
         generated = fluctuation_signals(rollout.generated, rollout.modes, selected)
         reference = fluctuation_signals(rollout.reference, rollout.modes, selected)
@@ -518,8 +545,10 @@ def quick_summary(report):
          f"**{_number(pod['covariance_relative_frobenius_error'])}** | "
          f"**{_number(None if pod_trimmed is None else pod_trimmed['covariance_relative_frobenius_error'])}** |"),
     ])
-    if "spatial_mean_coordinate" in statistics:
-        spatial_populations = statistics["spatial_mean_coordinate"]
+    spatial_key = next((key for key in (
+        "spatial_mean_coordinate", "spatial_mean_signal") if key in statistics), None)
+    if spatial_key is not None:
+        spatial_populations = statistics[spatial_key]
         spatial_mean = spatial_populations["untrimmed"]
         spatial_trimmed = spatial_populations.get(
             "generated_untrimmed_vs_reference_training_trimmed")
@@ -572,6 +601,11 @@ def analyze(rollout, *, gamma=.0728, point=None,
     moments, moment_arrays = coefficient_statistics(
         rollout.generated, rollout.reference, reference_mask,
         rollout.include_spatial_mean, trim_report)
+    if (rollout.spatial_mean_representation == "embedded_in_pod"):
+        add_embedded_spatial_mean_statistics(
+            moments, moment_arrays,
+            rollout.spatial_mean(rollout.generated),
+            rollout.spatial_mean(rollout.reference), reference_mask)
     report = rollout.provenance()
     report.update(
         purpose="descriptive rollout distribution and dynamics metrics; not a forecasting score",

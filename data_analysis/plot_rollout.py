@@ -37,19 +37,32 @@ def plot_coordinates(rollout, *, condition=0, ensemble=0, modes=None,
     modes = modes if modes is not None else [m for m in (1, 2, 5, 10, 20, 50) if m <= rollout.rank]
     if not modes or any(m < 1 or m > rollout.rank for m in modes):
         raise ValueError(f"POD modes must lie between 1 and {rollout.rank}.")
-    indices = ([0] if rollout.include_spatial_mean else []) + [m - 1 + int(rollout.include_spatial_mean) for m in modes]
-    mean_label = "√N × spatial mean"
+    indices = [m - 1 + rollout.pod_coordinate_offset for m in modes]
+    mean_label = ("√N × spatial mean" if rollout.include_spatial_mean
+                  else "spatial mean (derived from POD modes)")
     if rollout.spatial_mean_highpass_hz is not None:
         mean_label += f" (HP {rollout.spatial_mean_highpass_hz:g} Hz)"
-    labels = ([mean_label] if rollout.include_spatial_mean else []) + [f"POD {m}" for m in modes]
+    series = []
+    if rollout.spatial_mean_available:
+        mean_reference = (rollout.reference[condition, :, 0]
+                          if rollout.include_spatial_mean else
+                          rollout.spatial_mean(rollout.reference[condition]))
+        mean_generated = (rollout.generated[condition, ensemble, :, 0]
+                          if rollout.include_spatial_mean else
+                          rollout.spatial_mean(rollout.generated[condition, ensemble]))
+        series.append((mean_reference, mean_generated,
+                       mean_label))
+    series.extend((rollout.reference[condition, :, index],
+                   rollout.generated[condition, ensemble, :, index], f"POD {mode}")
+                  for index, mode in zip(indices, modes, strict=True))
     time = np.arange(rollout.generated.shape[2]) / rollout.fs
-    fig, axes = plt.subplots(len(indices), 1, figsize=(10, 2.1 * len(indices)),
+    fig, axes = plt.subplots(len(series), 1, figsize=(10, 2.1 * len(series)),
                              sharex=True, squeeze=False, constrained_layout=True)
-    for axis, index, label in zip(axes[:, 0], indices, labels):
-        axis.plot(time, rollout.reference[condition, :, index], color="0.2", lw=.8,
-                  label="Reference" if index == indices[0] else None)
-        axis.plot(time, rollout.generated[condition, ensemble, :, index], color="C3", lw=.8,
-                  label="Generated" if index == indices[0] else None)
+    for row, (axis, (reference, generated, label)) in enumerate(zip(axes[:, 0], series, strict=True)):
+        axis.plot(time, reference, color="0.2", lw=.8,
+                  label="Reference" if row == 0 else None)
+        axis.plot(time, generated, color="C3", lw=.8,
+                  label="Generated" if row == 0 else None)
         axis.set_ylabel(f"{label}\n[{rollout.units}]")
         axis.grid(alpha=.2)
     axes[0, 0].legend()
@@ -75,16 +88,9 @@ def plot_surface_video(rollout, *, condition=0, ensemble=0, steps=500,
     yidx = np.unique(np.linspace(0, ny - 1, min(spatial_points, ny), dtype=int))
     xidx = np.unique(np.linspace(0, nx - 1, min(spatial_points, nx), dtype=int))
     modes = np.asarray(rollout.modes[:, yidx][:, :, xidx], dtype=np.float32)
-    flat_modes = np.ascontiguousarray(modes.reshape(rollout.rank, -1))
-    offset = int(rollout.include_spatial_mean)
-
     def reconstruct(coordinates):
         values = np.asarray(coordinates[:count], dtype=np.float32)
-        fields = (values[:, offset:] @ flat_modes).reshape(
-            count, len(yidx), len(xidx))
-        if rollout.include_spatial_mean:
-            fields += (values[:, 0] / np.sqrt(rollout.n_space))[:, None, None]
-        return fields
+        return rollout.reconstruct(values, modes=modes)
 
     reference = reconstruct(rollout.reference[condition])
     generated = reconstruct(rollout.generated[condition, ensemble])

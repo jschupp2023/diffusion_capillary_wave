@@ -271,6 +271,7 @@ def train(
         experiment=data.experiment,
         rank=data.rank,
         include_spatial_mean=data.include_spatial_mean,
+        spatial_mean_representation=data.spatial_mean_representation,
         spatial_mean_highpass_hz=data.spatial_mean_highpass_hz,
         coordinate_count=data.n_coordinates,
         split_labels={key: list(value) for key, value in data.splits.items()},
@@ -357,6 +358,7 @@ def evaluate(
         input_amplitude=model.config.input_amplitude,
         input_frequency=model.config.input_frequency,
         input_time_origin="reset to zero at each rollout window",
+        spatial_mean_representation=data.spatial_mean_representation,
         spatial_mean_highpass_hz=data.spatial_mean_highpass_hz,
         state_variable="state",
     )

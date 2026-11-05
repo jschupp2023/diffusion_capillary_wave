@@ -126,12 +126,13 @@ def evaluate_model_0p10(checkpoint_path: Path, osc_dir: Path, output_dir: Path,
     # Capillary deformation energy calculation (>50 Hz waves)
     basis_path = '/home/jonas/ucsd_thesis/reduced_data/0p10/shared_pod/shared_pod_r1000.h5'
     with h5py.File(basis_path, 'r') as h5:
-        pod_modes = h5['spatial_modes'][:10]
-        x_m = h5['x_coords_m'][:]
-        y_m = h5['y_coords_m'][:]
+        pod_modes = h5['pod']['modes'][:10]
+        x_m = h5['grid']['x'][:] * length_scale('mm')
+        y_m = h5['grid']['y'][:] * length_scale('mm')
         
-    gamma = 0.10 * 9.81
-    opts = {'surface_tension': 0.0728, 'fluid_density': 1000.0}
+    gamma = 0.0728
+    stiffness, _ = capillary_stiffness(pod_modes, x_m, y_m, gamma=gamma)
+    opts = dict(exact=False, batch_size=256, stiffness=stiffness, include_spatial_mean=True)
     
     E_ref_raw = float(np.mean(compute_energies(ref_full, pod_modes, x_m, y_m, length_scale('microns'), gamma, **opts)['quadratic']))
     E_gen_raw = float(np.mean(compute_energies(hybrid[:, 0], pod_modes, x_m, y_m, length_scale('microns'), gamma, **opts)['quadratic']))

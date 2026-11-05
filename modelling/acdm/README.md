@@ -11,11 +11,14 @@ python -m modelling.acdm.conditional_edm train \
   --output runs/0p20_r100
 ```
 
-`--rank` counts shared fluctuation modes; the model has `rank + 1` coordinates.
-Coordinate zero is `sqrt(number_of_pixels) * frame_spatial_mean`. Remaining
-coordinates project each repetition's saved POD reconstruction into the shared
-basis. All retained input modes contribute, even when requesting fewer shared
-modes. Removed temporal mean fields remain removed.
+`--rank` counts shared POD modes. The coordinate layout is inferred from the
+shared-basis metadata. Legacy bases that removed each frame's spatial mean use
+`rank + 1` coordinates: coordinate zero is
+`sqrt(number_of_pixels) * frame_spatial_mean`. Cleaned full-field bases that
+retain the spatial mean use exactly `rank` POD coordinates; the mean is
+distributed across those modes and is not treated separately. All retained
+input modes contribute, even when requesting fewer shared modes. Removed
+temporal mean fields remain removed.
 
 The default data tree is `../reduced_data` relative to the project root.
 `--data-root` and `--shared-basis` override it. A higher-rank shared basis can
@@ -77,9 +80,10 @@ python -m modelling.acdm.conditional_edm train \
   --output runs/acdm_0p20_r20_increment_hp50_trim5
 ```
 
-`--spatial-mean-highpass-hz` changes only coordinate zero to
+For the legacy separate-mean format, `--spatial-mean-highpass-hz` changes only coordinate zero to
 `sqrt(N) * stored_filtered_spatial_mean`; shared-POD fluctuation coordinates
-are unchanged. The requested dataset must already exist in every source HDF5
+are unchanged. It is not applicable to cleaned full-field PODs, whose entire
+field has already received its configured preprocessing. The requested dataset must already exist in every source HDF5
 file. It is incompatible with `--no-spatial-mean`, and its dataset identity is
 saved in the data configuration so resume and evaluation reuse it.
 

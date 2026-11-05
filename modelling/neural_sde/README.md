@@ -136,17 +136,21 @@ python -m modelling.neural_sde evaluate \
 ```
 
 The SDE reads the same shared-POD source, whole-repetition split, and native
-one-step transitions as EDM. Default rank 50 means 51 coordinates including
-the spatial mean; `--no-spatial-mean` uses 50 POD coordinates. The model fits
+one-step transitions as EDM. For a legacy basis that removed frame means,
+rank 50 means 51 coordinates including a separate spatial mean and
+`--no-spatial-mean` uses 50 POD coordinates. For a cleaned full-field basis,
+rank 50 means 50 coordinates and the spatial mean is embedded across those
+POD modes; it cannot be removed independently. The model fits
 training-only state and increment statistics with EDM's existing fitter.
 `--dt` defaults to the source sampling interval and must agree with it.
 
-To use one of the full-trajectory high-pass spatial means stored in the POD
+For a legacy separate-mean basis, to use one of the full-trajectory high-pass spatial means stored in the POD
 files, add (for example) `--spatial-mean-highpass-hz 20` to the training
 command. Coordinate zero is then `sqrt(N)` times the stored 20 Hz high-pass
 mean. The selected cutoff and dataset identity are saved in the checkpoint;
 evaluation reopens the same trajectory automatically and has no cutoff
-override. Do not combine this option with `--no-spatial-mean`.
+override. Do not combine this option with `--no-spatial-mean`, and do not use
+it for cleaned full-field PODs whose complete field is already high-pass filtered.
 
 The MLP predicts drift in standardized **per-native-step** units. The trainable
 diffusion factor has a positive diagonal, and `--diffusion-init` is its initial

@@ -2,6 +2,9 @@
 import argparse
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import matplotlib
 matplotlib.use('Agg')
@@ -34,16 +37,26 @@ def make_bands_0p20(centers, low_edge=50.0):
     bands = np.column_stack((edges[:-1], edges[1:]))
     return bands
 
-def run_fit(output_dir, energy_fraction=0.95, rank_limit=1):
+def run_fit(output_dir, energy_fraction=0.95, rank_limit=1,
+            experiment='0p20', rank=10, data_root=None, shared_basis=None,
+            spatial_mean_highpass_hz=None):
     output = Path(output_dir).resolve()
     if output.exists():
         import shutil
         shutil.rmtree(output)
     output.mkdir(parents=True, exist_ok=True)
 
-    print("Loading 0p20 dataset...")
-    data = SharedPODTrainingData('0p20', 10, validation_reps=[13, 14], test_reps=[15, 16],
-                                 spatial_mean_highpass_hz=50.0, output_dtype='float64')
+    print(f"Loading {experiment} dataset...")
+    kwargs = dict(
+        data_root=data_root,
+        shared_basis=shared_basis,
+        validation_reps=[13, 14],
+        test_reps=[15, 16],
+        spatial_mean_highpass_hz=spatial_mean_highpass_hz,
+        output_dtype='float64'
+    )
+    kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    data = SharedPODTrainingData(experiment, rank, **kwargs)
     fs = 1.0 / data.native_dt
     centers = np.asarray(CENTERS_0P20, dtype=float)
     bands = make_bands_0p20(centers, low_edge=50.0)
@@ -196,8 +209,11 @@ def run_fit(output_dir, energy_fraction=0.95, rank_limit=1):
     axes[0].set(xlabel='Peak [Hz]', ylabel=f'{energy_fraction:g} excess rank')
     image = axes[1].imshow(participation.T, aspect='auto', origin='lower', cmap='magma',
                            extent=[0, len(centers), -0.5, data.n_coordinates - 0.5])
+    coord_labels = (['mean'] + [f'POD{i}' for i in range(1, data.rank + 1)]
+                    if data.include_spatial_mean else
+                    [f'POD{i}' for i in range(1, data.n_coordinates + 1)])
     axes[1].set(xticks=np.arange(len(centers)) + 0.5, xticklabels=[f'{x:g}' for x in centers],
-                yticks=np.arange(data.n_coordinates), yticklabels=['mean'] + [f'POD{i}' for i in range(1, 11)],
+                yticks=np.arange(data.n_coordinates), yticklabels=coord_labels,
                 xlabel='Nominal peak [Hz]', ylabel='Coordinate')
     fig.colorbar(image, ax=axes[1], label='Excess-mode participation')
     fig.savefig(output / 'ranks_and_participation.png', dpi=180)
@@ -214,6 +230,13 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, default='runs/diagnostics/frequency_hybrid_0p20_local_excess_v1/oscillators')
     parser.add_argument('--energy-fraction', type=float, default=0.95)
     parser.add_argument('--rank-limit', type=int, default=1)
+    parser.add_argument('--experiment', default='0p20')
+    parser.add_argument('--rank', type=int, default=10)
+    parser.add_argument('--data-root', type=Path, default=None)
+    parser.add_argument('--shared-basis', type=Path, default=None)
+    parser.add_argument('--spatial-mean-highpass-hz', type=float, default=None)
     args = parser.parse_args()
-    run_fit(args.output, args.energy_fraction, rank_limit=args.rank_limit)
+    run_fit(args.output, args.energy_fraction, rank_limit=args.rank_limit,
+            experiment=args.experiment, rank=args.rank, data_root=args.data_root,
+            shared_basis=args.shared_basis, spatial_mean_highpass_hz=args.spatial_mean_highpass_hz)
 

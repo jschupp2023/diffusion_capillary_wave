@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 
 import h5py
 import numpy as np
@@ -70,6 +71,37 @@ def test_public_train_and_evaluate_commands(tmp_path, shared_data):
     with np.load(output / "evaluation/rollout.npz") as result:
         assert result["trajectories"].shape == (2, 2, 3, 3)
         assert set(result["repetition"]) == set(shared_data.splits["test"])
+
+
+def test_train_evaluate_and_rollout_metrics_with_embedded_spatial_mean(
+        tmp_path, embedded_shared_data):
+    from data_analysis.rollout import Rollout
+    from modelling.acdm.conditional_edm.train import main as train_main
+    from modelling.acdm.conditional_edm.evaluate import main as evaluate_main
+
+    output = tmp_path / "embedded"
+    train_main([
+        "--experiment", "0p20", "--rank", "2",
+        "--data-root", embedded_shared_data.source_config["data_root"],
+        "--output", str(output), "--device", "cpu", "--epochs", "1",
+        "--hidden-dim", "8", "--num-blocks", "1", "--batch-size", "4",
+        "--max-train-batches", "1", "--max-validation-batches", "1",
+        "--cache-gib", "0",
+    ])
+    checkpoint = load_checkpoint(output / "best.pt")
+    assert checkpoint["model_config"]["reduced_dim"] == 2
+    assert checkpoint["data_config"]["spatial_mean_representation"] == "embedded_in_pod"
+    evaluation = output / "evaluation"
+    evaluate_main([
+        "--checkpoint", str(output / "best.pt"), "--output", str(evaluation),
+        "--device", "cpu", "--num-conditions", "2", "--ensemble-size", "2",
+        "--horizon", "3", "--sampling-steps", "3",
+    ])
+    report = json.loads((evaluation / "metrics.json").read_text())
+    assert report["spatial_mean_representation"] == "embedded_in_pod"
+    rollout = Rollout(evaluation)
+    assert rollout.spatial_mean_available
+    assert rollout.generated.shape == (2, 2, 4, 2)
 
 
 def test_pod_only_train_and_save_rollout_without_aggregate_metrics(tmp_path, shared_data):

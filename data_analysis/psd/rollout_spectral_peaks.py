@@ -16,7 +16,9 @@ from scipy.signal import find_peaks
 
 from data_analysis.rollout import Rollout, add_rollout_arguments, output_directory
 from .pod_center_psd import select_point
-from .rollout_psd import ensemble_psd, point_signals, fluctuation_signals
+from .rollout_psd import (
+    embedded_point_signals, ensemble_psd, fluctuation_signals, point_signals,
+)
 
 
 def validate_settings(nperseg, band, prominence_db, min_distance_hz):
@@ -139,6 +141,10 @@ def analyze(rollout, *, point=None, nperseg=8192, band=(100., 1500.),
     if rollout.include_spatial_mean:
         g = point_signals(rollout.generated, rollout.modes, rollout.n_space, selected)["center"]
         r = point_signals(rollout.reference, rollout.modes, rollout.n_space, selected)["center"]
+        signal = "center"
+    elif rollout.spatial_mean_available:
+        g = embedded_point_signals(rollout.generated, rollout.modes, selected)["center"]
+        r = embedded_point_signals(rollout.reference, rollout.modes, selected)["center"]
         signal = "center"
     else:
         signal = "center_without_spatial_mean"

@@ -69,6 +69,39 @@ def test_pod_only_preparation_omits_mean_and_keeps_repetition_splits(shared_data
     torch.testing.assert_close(stats.target_std, full_stats.target_std[1:])
 
 
+def test_embedded_spatial_mean_uses_rank_coordinates_and_mode_overlaps(
+        embedded_shared_data):
+    data = embedded_shared_data
+    assert data.spatial_mean_representation == "embedded_in_pod"
+    assert not data.include_spatial_mean
+    assert data.spatial_mean_available
+    assert data.pod_coordinate_offset == 0
+    assert data.n_coordinates == data.rank
+    assert data.source_config["spatial_mean_representation"] == "embedded_in_pod"
+    name = data.train_repetitions[0]
+    _, coordinates = data.read_coordinates(name, 0, 7)
+    with h5py.File(data.basis_path) as basis:
+        modes = np.asarray(basis["pod/modes"][:data.rank])
+    fields = (coordinates @ modes.reshape(data.rank, -1)).reshape(-1, 3, 3)
+    np.testing.assert_allclose(data.spatial_mean(coordinates), fields.mean((1, 2)))
+    assert "spatial mean embedded" in data.signature()["coordinate_order"]
+    reopened = SharedPODTrainingData(**data.source_config)
+    assert reopened.spatial_mean_representation == "embedded_in_pod"
+    with pytest.raises(ValueError, match="cannot be removed"):
+        SharedPODTrainingData(
+            data.experiment, data.rank,
+            data_root=data.source_config["data_root"],
+            shared_basis=data.basis_path,
+            validation_reps=data.source_config["validation_reps"],
+            test_reps=data.source_config["test_reps"],
+            include_spatial_mean=False,
+        )
+    with pytest.raises(ValueError, match="high-pass cutoff"):
+        SharedPODTrainingData(
+            **data.source_config, spatial_mean_highpass_hz=20.,
+        )
+
+
 def test_transition_halos_stride_and_shuffle_preserve_every_pair(shared_data):
     kwargs = dict(lag_steps=2, stride_steps=2, history_steps=2, batch_size=3)
     expected_ids, observed = set(), set()

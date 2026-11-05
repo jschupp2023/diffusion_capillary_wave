@@ -2,8 +2,9 @@
 
     python -m data_analysis.correlations.increment_covariance 0p30 --rep 1 --rank 50
 
-POD rank r gives r+1 model coordinates: sqrt(N) times the spatial mean, then
-the first r shared POD coefficients. By default, the same training-only state
+Legacy POD rank r gives r+1 model coordinates: sqrt(N) times the spatial mean,
+then the first r shared POD coefficients. Cleaned full-field POD data give r
+coordinates with the spatial mean embedded in those modes. By default, the same training-only state
 normalization as the neural SDE is fitted directly from the prepared data.
 An optional checkpoint can supply its saved normalization instead.
 All valid increments are used; increments are not centered or drift-corrected.
@@ -130,11 +131,11 @@ def load_normalized_trajectory(power, rep, rank, checkpoint_path=None, *, data_r
         source_config = checkpoint["data_config"]
         if "dt" not in config or "diffusion_model.raw_diagonal" not in checkpoint["model_state"]:
             raise ValueError("Expected a neural SDE checkpoint with saved state normalization.")
-        if (source_config["experiment"] != power or int(source_config["rank"]) != rank
-                or not bool(source_config.get("include_spatial_mean", True))
-                or int(config["reduced_dim"]) != rank + 1):
+        if (source_config["experiment"] != power or int(source_config["rank"]) != rank):
             raise ValueError("Checkpoint forcing, POD rank, or spatial-mean convention differs from request.")
         data = checkpoint_data(checkpoint, data_root=data_root, shared_basis=shared_basis)
+        if int(config["reduced_dim"]) != data.n_coordinates:
+            raise ValueError("Checkpoint dimension differs from the prepared data.")
         if not np.isclose(float(config["dt"]), data.native_dt, rtol=1e-4, atol=0):
             raise ValueError("Checkpoint timestep differs from source timestamps.")
         state = checkpoint["model_state"]
@@ -146,10 +147,10 @@ def load_normalized_trajectory(power, rep, rank, checkpoint_path=None, *, data_r
     if len(names) != 1:
         raise ValueError(f"Expected one repetition {rep} in shared-POD data; found {len(names)}.")
     name = names[0]
-    if (mean.shape != (rank + 1,) or std.shape != mean.shape or not np.isfinite(mean).all()
+    if (mean.shape != (data.n_coordinates,) or std.shape != mean.shape or not np.isfinite(mean).all()
             or not np.isfinite(std).all() or np.any(std <= 0)):
         raise ValueError("Invalid training state normalization.")
-    z = np.empty((data.frame_counts[name], rank + 1), dtype=np.float64)
+    z = np.empty((data.frame_counts[name], data.n_coordinates), dtype=np.float64)
     if len(z) < 2:
         raise ValueError("Need at least two samples for increment covariance.")
     for start in range(0, len(z), batch_size):
@@ -159,8 +160,13 @@ def load_normalized_trajectory(power, rep, rank, checkpoint_path=None, *, data_r
     if not np.isfinite(z).all():
         raise ValueError("Normalized trajectory contains nonfinite values.")
     metadata = dict(forcing=power, repetition=rep, repetition_name=name,
-                    pod_rank=rank, coordinate_count=rank + 1,
-                    coordinate_order="sqrt(N)*spatial_mean, shared POD 1..rank",
+                    pod_rank=rank, coordinate_count=data.n_coordinates,
+                    coordinate_order=("sqrt(N)*spatial_mean, shared POD 1..rank"
+                                      if data.include_spatial_mean else
+                                      "shared POD 1..rank with spatial mean embedded"
+                                      if data.spatial_mean_available else
+                                      "shared POD 1..rank; spatial mean omitted"),
+                    spatial_mean_representation=data.spatial_mean_representation,
                     normalization=normalization, checkpoint=checkpoint_name,
                     normalization_train_repetitions=list(data.train_repetitions),
                     normalization_state_mean=mean.tolist(), normalization_state_std=std.tolist(),
@@ -225,7 +231,10 @@ def save_diagnostic(h, q, metadata, output, *, unscaled=False, overwrite=False,
     norm = Normalize(vmin=0, vmax=max(1, diagonal.shape[1] - 1))
     for i in range(diagonal.shape[1]):
         axes[1].plot(h, diagonal[:, i], "o-", ms=2, lw=.8, color=colors(norm(i)), alpha=.7)
-    fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=colors), ax=axes[1], label="Coordinate index (0 = spatial mean)")
+    label = ("Coordinate index (0 = spatial mean)"
+             if metadata.get("spatial_mean_representation") == "separate_coordinate"
+             else "POD coordinate index")
+    fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=colors), ax=axes[1], label=label)
     axes[1].set(xlabel="Lag h [s]", ylabel=f"{'M' if unscaled else 'Q'}ᵢᵢ(h) [{units}]")
     axes[1].grid(alpha=.25)
     fig.savefig(output / ("increment_second_moment.png" if unscaled else "increment_covariance.png"), dpi=160)

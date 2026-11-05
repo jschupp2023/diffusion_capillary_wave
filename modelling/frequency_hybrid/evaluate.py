@@ -32,6 +32,7 @@ def save_rollout(path, gen, ref, times, data, description, *, repetitions=None,
         reference_time=times,repetition=np.asarray(repetitions),
         start_index=np.asarray(start_indices,dtype=np.int64))
     write_json(path/'metrics.json',dict(rank=data.rank,include_spatial_mean=data.include_spatial_mean,
+        spatial_mean_representation=data.spatial_mean_representation,
         source_shared_basis=str(data.basis_path),time_units='s',signal_units=data.signal_units,
         physical_lag=data.native_dt,lag_steps=1,spatial_mean_highpass_hz=data.spatial_mean_highpass_hz,
         temporal_preprocessing=data.temporal_preprocessing(),model_type=description,
@@ -46,9 +47,11 @@ def validate_generated(gen):
     return dict(finite=True,max_abs=float(np.max(abs(gen))))
 
 
-def tcn_rollout(out, component, length, ensemble=4, burnin=10000):
+def tcn_rollout(out, component, length, ensemble=4, burnin=10000, device=None):
     target=out/f'tcn_{component}'
-    model,payload=load_model(target/'best.pt','cpu');model.eval()
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model,payload=load_model(target/'best.pt',device);model.eval()
     data=component_data(out,component)
     initial=[];histories=[]
     h=model.config.history_steps
@@ -57,17 +60,15 @@ def tcn_rollout(out, component, length, ensemble=4, burnin=10000):
         initial.append(x[h]);histories.append(x[h-1::-1])
     started=time.monotonic()
     with torch.no_grad():
+        init_t=torch.tensor(np.asarray(initial),dtype=torch.float32,device=device)
+        hist_t=torch.tensor(np.asarray(histories),dtype=torch.float32,device=device)
         # Smoke screen catches nonfinite trajectories before long evaluation.
-        screen=model.rollout(torch.tensor(np.asarray(initial)).float(),
-            history_states=torch.tensor(np.asarray(histories)).float(),
-            num_trajectories=ensemble,horizon=5000,seed=41)
+        screen=model.rollout(init_t,history_states=hist_t,num_trajectories=ensemble,horizon=5000,seed=41).cpu()
         status=validate_generated(screen.numpy())
         if not status['finite']:
             np.savez_compressed(target/'failed_screen.npz',trajectories=screen.numpy())
             return None,status
-        gen=model.rollout(torch.tensor(np.asarray(initial)).float(),
-            history_states=torch.tensor(np.asarray(histories)).float(),
-            num_trajectories=ensemble,horizon=burnin+length-1,seed=41).numpy()
+        gen=model.rollout(init_t,history_states=hist_t,num_trajectories=ensemble,horizon=burnin+length-1,seed=41).cpu().numpy()
     status=validate_generated(gen);status['seconds']=time.monotonic()-started
     # Preserve evidence of every simulated sample, including failures/burn-in.
     np.savez_compressed(target/'stationary_generation.npz',trajectories=gen,
@@ -118,12 +119,16 @@ def describe(path, gen, ref, times, data, label, bands, *, rollout_metadata=None
         generated_center_psd=pg,reference_center_psd=pr)
     write_json(path/'diagnostics.json',result)
     fig,axes=plt.subplots(2,1,figsize=(10,7),layout='constrained')
-    mask=(f>=100)&(f<=1500)
+    f_min = max(10.0, float(np.min(bands)) - 50.0)
+    f_max = min(fs / 2.0, float(np.max(bands)) + 50.0)
+    mask=(f>=f_min)&(f<=f_max)
     axes[0].semilogy(f[mask],pr[mask],color='black',label='Held-out reference')
     axes[0].semilogy(f[mask],pg[mask],label=label)
     axes[0].set(xlabel='Frequency [Hz]',ylabel='Center PSD [µm²/Hz]')
-    axes[1].plot(np.arange(4001)/fs*1000,acfr[:,0],color='black',label='Reference mean ACF')
-    axes[1].plot(np.arange(4001)/fs*1000,acfg[:,0],label='Generated mean ACF')
+    label_ref_acf = 'Reference mean ACF' if getattr(data, 'include_spatial_mean', False) else 'Reference POD 1 ACF'
+    label_gen_acf = 'Generated mean ACF' if getattr(data, 'include_spatial_mean', False) else 'Generated POD 1 ACF'
+    axes[1].plot(np.arange(4001)/fs*1000,acfr[:,0],color='black',label=label_ref_acf)
+    axes[1].plot(np.arange(4001)/fs*1000,acfg[:,0],label=label_gen_acf)
     axes[1].set(xlabel='Lag [ms]',ylabel='ACF')
     for ax in axes: ax.grid(alpha=.2);ax.legend()
     fig.savefig(path/'comparison.png',dpi=170);plt.close(fig)
@@ -131,22 +136,22 @@ def describe(path, gen, ref, times, data, label, bands, *, rollout_metadata=None
     return result
 
 
-def evaluate(out):
+def evaluate(out, device=None):
     out=Path(out);data=component_data(out,'full');fs=1/data.native_dt
     length=min(50001,min(data.frame_counts[n] for n in data.validation_repetitions))
     bands=data.manifest['bands_hz'];ensemble=4
     refs={};times=[]
-    for component in ['full','remainder']+[f'band{i}' for i in range(3)]:
+    for component in ['full','remainder']+[f'band{i}' for i in range(len(bands))]:
         source=component_data(out,component)
         refs[component]=np.stack([source.read_coordinates(n,0,length)[1] for n in source.validation_repetitions])
     times=np.stack([data.read_coordinates(n,0,length)[0] for n in data.validation_repetitions])
     report=dict(length=length,ensemble_per_record=ensemble,fs=fs,models={},survival={},
         stationary_warning='Training histories then burn-in; stationarity is diagnosed, not assumed.',
-        held_out='Validation reps13-14 only. Test15-16 untouched.')
+        held_out=f'Validation reps {data.validation_repetitions} only. Test {data.test_repetitions} untouched.')
     oscillators=[]
-    for i in range(3):
+    for i in range(len(bands)):
         with np.load(out/f'oscillator_{i}.npz') as z: model=dict(z)
-        gen=simulate_band(model,length,paths=2*ensemble,seed=101+i).reshape(2,ensemble,length,11)
+        gen=simulate_band(model,length,paths=2*ensemble,seed=101+i).reshape(2,ensemble,length,data.n_coordinates)
         oscillators.append(gen)
         report['models'][f'band{i}']=describe(out/f'validation_band{i}',gen,refs[f'band{i}'],times,data,f'Band {i+1} oscillator',bands)
         f=np.fft.rfftfreq(32768,1/fs)
@@ -154,7 +159,7 @@ def evaluate(out):
         inside=(f>=bands[i][0])&(f<=bands[i][1])
         report['models'][f'band{i}']['expected_outside_design_band_power_fraction']=float(1-density[inside].sum()/density.sum())
     for component in ('full','remainder'):
-        generated,status=tcn_rollout(out,component,length,ensemble)
+        generated,status=tcn_rollout(out,component,length,ensemble,device=device)
         report['survival'][component]=status
         if generated is not None:
             report['models'][component]=describe(out/f'validation_{component}',generated,
@@ -168,24 +173,24 @@ def evaluate(out):
     report['models']['oracle_remainder']=describe(out/'validation_oracle_remainder',oracle,refs['full'],times,data,'Observed remainder + independent oscillators',bands)
     root=Path(__file__).resolve().parents[2]
     baseline=root/'runs/adaptive/neural_sde_0p10_tcn63_untrimmed_structured/trials/untrimmed_variance_w0p001_lr1e6/rollout_99937_validation_1'
-    if (baseline/'rollout.npz').exists():
+    if (baseline/'rollout.npz').exists() and data.experiment == '0p10' and data.n_coordinates == 11:
         with np.load(baseline/'rollout.npz') as z:
             offset=int(data.component_edge)-int(z['start_index'][0])
-            old=z['trajectories'][:,:,offset:offset+length,:11].copy()
-            old_ref=z['reference'][:,offset:offset+length,:11].copy()
+            old=z['trajectories'][:,:,offset:offset+length,:data.n_coordinates].copy()
+            old_ref=z['reference'][:,offset:offset+length,:data.n_coordinates].copy()
             old_times=z['reference_time'][:,offset:offset+length].copy()
-        np.testing.assert_allclose(old_ref,refs['full'][:1],rtol=1e-5,atol=1e-3)
-        report['models']['existing_rank20_projected']=describe(out/'validation_existing_baseline',old,old_ref,old_times,data,
-            'Established rank20 TCN, first10 modes + mean',bands)
-        report['models']['existing_rank20_projected']['caution']='One saved path and rep13; longer training lineage; not a matched rank10 training ablation'
+        if np.allclose(old_ref,refs['full'][:1],rtol=1e-5,atol=1e-3):
+            report['models']['existing_rank20_projected']=describe(out/'validation_existing_baseline',old,old_ref,old_times,data,
+                f'Established rank20 TCN, first{data.rank} modes + mean',bands)
+            report['models']['existing_rank20_projected']['caution']='One saved path and rep13; longer training lineage; not a matched rank10 training ablation'
     write_json(out/'evaluation.json',report)
     fig,ax=plt.subplots(figsize=(12,5),layout='constrained')
-    for key,label in [('full','Matched rank10 TCN'),('hybrid','Hybrid'),('oracle_remainder','Observed remainder + oscillators'),('existing_baseline','Established rank20 TCN')]:
+    for key,label in [('full',f'Matched rank{data.rank} TCN'),('hybrid','Hybrid'),('oracle_remainder','Observed remainder + oscillators'),('existing_baseline','Established rank20 TCN')]:
         p=out/f'validation_{key}/high_resolution_spectra.npz'
         if not p.exists():continue
         with np.load(p) as z:
-            f=z['frequency_hz'];mask=(f>=100)&(f<=1500)
-            if key=='full':ax.semilogy(f[mask],z['reference_center_psd'][mask],color='black',lw=2,label='Reference reps13–14')
+            f=z['frequency_hz'];f_min = max(10.0, float(np.min(bands)) - 50.0);f_max = min(fs / 2.0, float(np.max(bands)) + 50.0);mask=(f>=f_min)&(f<=f_max)
+            if key=='full' or (key=='hybrid' and 'full' not in report['models']):ax.semilogy(f[mask],z['reference_center_psd'][mask],color='black',lw=2,label=f'Reference reps {data.validation_repetitions}')
             ax.semilogy(f[mask],z['generated_center_psd'][mask],label=label)
     ax.set(xlabel='Frequency [Hz]',ylabel='Center PSD [µm²/Hz]',title='Unfiltered sums and neural-SDE controls — Welch spacing 3.52 Hz')
     ax.grid(alpha=.2);ax.legend();fig.savefig(out/'comparison.png',dpi=180);plt.close(fig)

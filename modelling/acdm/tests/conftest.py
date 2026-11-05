@@ -39,7 +39,8 @@ def shared_data(tmp_path):
                 source.create_dataset("preprocessing/frame_spatial_mean", data=rep + np.arange(length)**2 * .01).attrs["units"] = "microns"
                 source.create_dataset("preprocessing/temporal_mean_field", data=np.zeros((3, 3))).attrs["units"] = "microns"
             group = basis.create_group(f"repetitions/{name}")
-            group.attrs.update(source_pod_file=str(source_path), input_rank=3)
+            group.attrs.update(source_pod_file=str(source_path), input_rank=3,
+                               signal_units="microns")
             group.create_dataset("projection", data=u.T @ local)
     return SharedPODTrainingData("0p20", rank=2, data_root=root, batch_size=5, output_dtype="float64")
 
@@ -67,4 +68,29 @@ def highpass_shared_data(shared_data):
         spatial_mean_highpass_hz=cutoff_hz,
         batch_size=5,
         output_dtype="float64",
+    )
+
+
+@pytest.fixture
+def embedded_shared_data(shared_data):
+    """Same tiny experiment with the spatial mean retained inside POD modes."""
+    with h5py.File(shared_data.basis_path, "r+") as basis:
+        old_modes = np.asarray(basis["pod/modes"]).reshape(3, -1)
+        modes = np.stack((np.ones(9) / 3, old_modes[0], old_modes[1]))
+        basis["pod/modes"][:] = modes.reshape(3, 3, 3)
+        basis.attrs["instantaneous_spatial_mean_removed"] = False
+        for name, source_path in shared_data.source_paths.items():
+            with h5py.File(source_path, "r+") as source:
+                source["pod/modes"][:] = modes.reshape(3, 3, 3)
+                source.attrs["instantaneous_spatial_mean_removed"] = False
+            basis[f"repetitions/{name}/projection"][:] = np.eye(3)
+    return SharedPODTrainingData(
+        shared_data.experiment, shared_data.rank,
+        data_root=shared_data.source_config["data_root"],
+        shared_basis=shared_data.basis_path,
+        validation_reps=[int(name.rsplit("rep", 1)[1])
+                         for name in shared_data.validation_repetitions],
+        test_reps=[int(name.rsplit("rep", 1)[1])
+                   for name in shared_data.test_repetitions],
+        batch_size=5, output_dtype="float64",
     )

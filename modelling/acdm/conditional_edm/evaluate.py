@@ -426,7 +426,7 @@ def evaluate_model(model, data, *, split="test", num_conditions=32, ensemble_siz
     """Sample physical-coordinate trajectories and matching reference windows."""
     if min(num_conditions, ensemble_size, batch_size, horizon) < 1 or (metrics and horizon < 2):
         raise ValueError("Counts must be positive; metrics require horizon >= 2.")
-    if metrics and not data.include_spatial_mean:
+    if metrics and not data.spatial_mean_available:
         raise ValueError("Aggregate rollout metrics require spatial mean; use --no-metrics for POD-only rollouts.")
     filter_report = {}
     reference, history, times, selected_names, starts = reference_windows(
@@ -456,8 +456,11 @@ def evaluate_model(model, data, *, split="test", num_conditions=32, ensemble_siz
                   horizon=horizon, lag_steps=lag, native_dt=data.native_dt,
                   time_units=data.time_units, physical_lag=lag * data.native_dt,
                   coordinate_order=("sqrt(N)*spatial_mean, shared POD coefficients" if data.include_spatial_mean
-                                    else "shared POD coefficients only"),
+                                    else "shared POD coefficients with spatial mean embedded"
+                                    if data.spatial_mean_available else
+                                    "shared POD coefficients; spatial mean omitted"),
                   include_spatial_mean=data.include_spatial_mean,
+                  spatial_mean_representation=data.spatial_mean_representation,
                   spatial_mean_highpass_hz=data.spatial_mean_highpass_hz)
     if filter_report:
         report["reference_window_filter"] = filter_report

@@ -165,7 +165,8 @@ def _velocity_transition_arrays(data, config, split, batch_size, seed=None,
             config, history_steps=eligibility_history_steps,
             history_offsets=tuple(range(1, eligibility_history_steps + 1)))
     maximum_horizon = max(multistep_horizons or (1,))
-    source_indices = {name: index for index, name in enumerate(data.splits[split])}
+    source_indices = ({name: index for index, name in enumerate(data.splits[split])}
+                      if include_window_ids else None)
     for source_name, batch in data.iter_transitions(
             split, lag_steps=sampling_config.lag_steps * maximum_horizon,
             history_steps=sampling_config.history_steps,
@@ -2894,6 +2895,7 @@ def evaluate(checkpoint_path: Path, output: Path, *, split="test", num_condition
     )
     report.update(source_shared_basis=str(data.basis_path), rank=data.rank,
                   temporal_preprocessing=data.temporal_preprocessing(),
+                  spatial_mean_representation=data.spatial_mean_representation,
                   spatial_mean_highpass_hz=data.spatial_mean_highpass_hz,
                   training_lag_steps=training_lag,
                   state_variable=model.config.state_variable,
@@ -3812,7 +3814,7 @@ def main(argv=None):
                 parser.error("Temporal component manifest and component must be supplied together.")
             options = dict(data_root=args.data_root, shared_basis=args.shared_basis,
                            validation_reps=args.validation_reps, test_reps=args.test_reps,
-                           include_spatial_mean=not args.no_spatial_mean,
+                           include_spatial_mean=(False if args.no_spatial_mean else None),
                            downsample_factor=args.downsample_factor,
                            downsample_edge_trim=args.downsample_edge_trim,
                            spatial_mean_highpass_hz=args.spatial_mean_highpass_hz,

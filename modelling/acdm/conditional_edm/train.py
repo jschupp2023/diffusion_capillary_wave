@@ -75,7 +75,7 @@ def _progress_line(record: dict[str, Any]) -> str:
 def _pod_only_normalization(checkpoint_path: Path, data: SharedPODTrainingData,
                             model_config: EDMConfig, data_signature: dict) -> NormalizationStats:
     """Slice existing training-only scales after verifying identical sources and transitions."""
-    if data.include_spatial_mean:
+    if data.spatial_mean_available:
         raise ValueError("Normalization reuse is intended only for POD-only training.")
     source = load_checkpoint(checkpoint_path)
     source_config = EDMConfig.from_dict(source["model_config"])
@@ -90,6 +90,8 @@ def _pod_only_normalization(checkpoint_path: Path, data: SharedPODTrainingData,
     current.pop("coordinate_order", None)
     original.pop("include_spatial_mean", None)
     current.pop("include_spatial_mean", None)
+    original.pop("spatial_mean_representation", None)
+    current.pop("spatial_mean_representation", None)
     if original != current:
         raise ValueError("Source checkpoint uses different shared POD sources or repetition splits.")
     stats = source["normalization"]
@@ -202,7 +204,7 @@ def train(
     data_signature = data.signature()
     if model_config.reduced_dim != data.n_coordinates:
         raise ValueError("Model dimension must equal the prepared coordinate count.")
-    if not data.include_spatial_mean and train_config.rollout_every:
+    if not data.spatial_mean_available and train_config.rollout_every:
         raise ValueError("POD-only training requires rollout_every=0; use a saved rollout for energy diagnostics.")
     if model_config.native_dt is None:
         model_config = replace(model_config, native_dt=data.native_dt)
@@ -410,9 +412,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Train a conditional EDM on reduced trajectories",
     )
     parser.add_argument("--experiment", help="Power folder, e.g. 0p20 (required for a new run).")
-    parser.add_argument("--rank", type=int, help="Shared fluctuation rank; model dimension is rank+1 unless --no-spatial-mean.")
+    parser.add_argument("--rank", type=int, help="Shared POD rank; cleaned full-field data use rank coordinates, legacy data normally use rank+1.")
     parser.add_argument("--no-spatial-mean", action="store_true",
-                        help="Train only on shared POD coefficients; omit coordinate zero from inputs and targets.")
+                        help="Legacy data only: omit the separate mean coordinate. Embedded means cannot be removed independently.")
     parser.add_argument("--normalization-from-checkpoint", type=Path,
                         help="For a POD-only run, reuse matching training-only scales from a mean-inclusive checkpoint.")
     parser.add_argument("--data-root", type=Path)
@@ -521,7 +523,7 @@ def main(argv: list[str] | None = None) -> None:
                                     data_root=args.data_root or DEFAULT_DATA_ROOT,
                                     shared_basis=args.shared_basis,
                                     validation_reps=args.validation_reps, test_reps=args.test_reps,
-                                    include_spatial_mean=not args.no_spatial_mean,
+                                    include_spatial_mean=(False if args.no_spatial_mean else None),
                                     spatial_mean_highpass_hz=args.spatial_mean_highpass_hz)
         if args.no_spatial_mean:
             runtime.setdefault("rollout_every", 0)

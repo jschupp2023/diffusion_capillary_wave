@@ -31,6 +31,14 @@ def fluctuation_signals(coordinates, modes, point):
     return dict(center_without_spatial_mean=coordinates @ modes[:, point.y_index, point.x_index])
 
 
+def embedded_point_signals(coordinates, modes, point):
+    """Signals when the physical spatial mean is distributed across POD modes."""
+    center = coordinates @ modes[:, point.y_index, point.x_index]
+    spatial_mean = coordinates @ modes.reshape(len(modes), -1).mean(axis=1)
+    return dict(center=center, center_without_spatial_mean=center - spatial_mean,
+                spatial_mean=spatial_mean)
+
+
 def ensemble_psd(signals, fs, nperseg, overlap):
     densities = []
     for signal in signals.reshape(-1, signals.shape[-1]):
@@ -47,6 +55,9 @@ def analyze(rollout, *, point=None, nperseg=1024, overlap=.5, output=None, overw
     if rollout.include_spatial_mean:
         generated = point_signals(rollout.generated, rollout.modes, rollout.n_space, selected)
         reference = point_signals(rollout.reference, rollout.modes, rollout.n_space, selected)
+    elif rollout.spatial_mean_available:
+        generated = embedded_point_signals(rollout.generated, rollout.modes, selected)
+        reference = embedded_point_signals(rollout.reference, rollout.modes, selected)
     else:
         generated = fluctuation_signals(rollout.generated, rollout.modes, selected)
         reference = fluctuation_signals(rollout.reference, rollout.modes, selected)
@@ -55,7 +66,7 @@ def analyze(rollout, *, point=None, nperseg=1024, overlap=.5, output=None, overw
                              x=selected.x_coordinate, y=selected.y_coordinate),
                   estimator="Welch: Hann window, constant detrend, density scaling",
                   density_units=f"{rollout.units}^2/Hz", signals={},
-                  spatial_mean_available=rollout.include_spatial_mean)
+                  spatial_mean_available=rollout.spatial_mean_available)
     arrays = {}
     figure, axes = plt.subplots(len(generated), 1, figsize=(8, 3.5 * len(generated)),
                                squeeze=False, constrained_layout=True)

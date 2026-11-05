@@ -2,8 +2,9 @@
 
 This package applies the original state-based stochastic OpInf equations to the
 same normalized shared-POD trajectories used by ACDM and the Neural SDE.
-`--rank R` retains `R` shared POD modes plus the `sqrt(N) * spatial_mean`
-coordinate. The default whole-repetition split is 12 train, 2 validation, and
+`--rank R` retains `R` shared POD modes. Legacy mean-removed bases additionally
+prepend the `sqrt(N) * spatial_mean` coordinate; cleaned full-field bases keep
+the mean embedded in the `R` POD coordinates. The default whole-repetition split is 12 train, 2 validation, and
 2 test for a 16-repetition experiment. Only training frames fit normalization
 and operators.
 

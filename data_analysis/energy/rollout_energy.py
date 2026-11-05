@@ -5,10 +5,10 @@
 
 Default: quadratic (small-slope) capillary energy, using the existing gradient
 stiffness matrix. --exact also evaluates gamma * integral(sqrt(1+|grad h|²)-1)
-on every frame in bounded reconstruction batches. Uniform spatial mean has
-zero gradient and contributes no deformation energy; coordinate 0 is omitted.
-Removed temporal mean surfaces are not restored in either generated/reference
-fields. Comparisons therefore describe the shared-rank fluctuating surface.
+on every frame in bounded reconstruction batches. A separate uniform spatial
+mean has zero gradient and is omitted; when the mean is embedded in the POD,
+all POD coefficients and their full gradient stiffness are retained. Removed
+temporal mean surfaces are not restored.
 """
 import argparse
 import json
@@ -57,7 +57,10 @@ def analyze(rollout, *, gamma=.0728, exact=False, batch_size=32, output=None, ov
     reference = compute_energies(rollout.reference, rollout.modes, x_m, y_m, length_scale(rollout.units), gamma, **options)
     report = rollout.provenance()
     report.update(energy_units="J", gamma_N_per_m=gamma, geometry="surface",
-                  treatment="shared-rank fluctuations; spatial mean has zero deformation energy", energy={})
+                  treatment=("all shared POD modes; embedded spatial mean retained"
+                             if rollout.spatial_mean_representation == "embedded_in_pod" else
+                             "shared-rank fluctuations; separate spatial mean has zero deformation energy"),
+                  energy={})
     arrays = dict(reference_time_seconds=rollout.time, generated_time_seconds=np.arange(rollout.generated.shape[2]) / rollout.fs)
     figure, axes = plt.subplots(len(generated), 1, figsize=(8, 3.5 * len(generated)), squeeze=False, constrained_layout=True)
     for axis, name in zip(axes[:, 0], generated):

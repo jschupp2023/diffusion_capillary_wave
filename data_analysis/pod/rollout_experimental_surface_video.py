@@ -37,21 +37,6 @@ def _text(value: object) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
-def _reconstruct(
-    coordinates: np.ndarray,
-    modes: np.ndarray,
-    n_space: int,
-    include_spatial_mean: bool,
-) -> np.ndarray:
-    offset = int(include_spatial_mean)
-    fields = (coordinates[:, offset:] @ modes.reshape(len(modes), -1)).reshape(
-        len(coordinates), *modes.shape[1:]
-    )
-    if include_spatial_mean:
-        fields += (coordinates[:, 0] / np.sqrt(n_space))[:, None, None]
-    return fields
-
-
 def _load_fields(
     rollout: Rollout,
     raw_path: Path,
@@ -68,6 +53,8 @@ def _load_fields(
                          "Prepared rollout indices are not native source-frame indices.")
     if rollout.start_index is None:
         raise ValueError("Rollout does not contain source start indices.")
+    if not rollout.spatial_mean_available:
+        raise ValueError("Experimental surface comparison requires the physical spatial mean.")
     if not 0 <= condition < len(rollout.reference):
         raise ValueError("Condition is outside the rollout.")
     if not 0 <= ensemble < rollout.generated.shape[1]:
@@ -77,7 +64,7 @@ def _load_fields(
             f"Condition {condition} uses {rollout.repetitions[condition]}, while "
             f"the POD input represents {pod_path.parent.name}."
         )
-    if rollout.spatial_mean_highpass_hz is None:
+    if rollout.include_spatial_mean and rollout.spatial_mean_highpass_hz is None:
         raise ValueError("The rollout does not use a spatial-mean high-pass filter.")
     count = min(steps, rollout.generated.shape[2])
     ny, nx = rollout.modes.shape[1:]
@@ -85,41 +72,37 @@ def _load_fields(
     xidx = np.unique(np.linspace(0, nx - 1, min(spatial_points, nx), dtype=int))
     sampled_modes = np.asarray(rollout.modes[:, yidx][:, :, xidx], dtype=np.float32)
 
-    reference = _reconstruct(
+    reference = rollout.reconstruct(
         np.asarray(rollout.reference[condition, :count], dtype=np.float32),
-        sampled_modes,
-        rollout.n_space,
-        rollout.include_spatial_mean,
-    )
-    generated = _reconstruct(
+        sampled_modes)
+    generated = rollout.reconstruct(
         np.asarray(rollout.generated[condition, ensemble, :count], dtype=np.float32),
-        sampled_modes,
-        rollout.n_space,
-        rollout.include_spatial_mean,
-    )
+        sampled_modes)
 
     raw_info = inspect_input(raw_path, 0, None)
     with h5py.File(pod_path, "r") as pod:
         recorded_raw = Path(_text(pod.attrs.get("source_file", ""))).name
         if recorded_raw and recorded_raw != raw_path.name:
             raise ValueError(f"POD source is {recorded_raw}, not {raw_path.name}.")
-        mean_path = spatial_mean_dataset_path(rollout.spatial_mean_highpass_hz)
-        required = (
+        mean_path = (spatial_mean_dataset_path(rollout.spatial_mean_highpass_hz)
+                     if rollout.include_spatial_mean else None)
+        required = [
             "source/frame_number",
             "grid/time",
-            "preprocessing/frame_spatial_mean",
             "preprocessing/temporal_mean_field",
-            mean_path,
-        )
+        ]
+        if rollout.include_spatial_mean:
+            required.extend(("preprocessing/frame_spatial_mean", mean_path))
         missing = [name for name in required if name not in pod]
         if missing:
             raise KeyError(f"POD file is missing: {', '.join(missing)}")
         frame_numbers = np.asarray(pod["source/frame_number"], dtype=np.int64)
         source_time = np.asarray(pod["grid/time"], dtype=np.float64)
-        original_mean = np.asarray(
-            pod["preprocessing/frame_spatial_mean"], dtype=np.float32
-        )
-        filtered_mean = np.asarray(pod[mean_path], dtype=np.float32)
+        original_mean = (np.asarray(
+            pod["preprocessing/frame_spatial_mean"], dtype=np.float32)
+            if rollout.include_spatial_mean else None)
+        filtered_mean = (np.asarray(pod[mean_path], dtype=np.float32)
+                         if rollout.include_spatial_mean else None)
         temporal_mean = np.asarray(
             pod["preprocessing/temporal_mean_field"], dtype=np.float32
         )[np.ix_(yidx, xidx)]
@@ -144,19 +127,16 @@ def _load_fields(
             if key not in frames:
                 raise KeyError(f"Missing raw frame /main/{key}.")
             field = np.asarray(frames[key], dtype=np.float32)[np.ix_(yidx, xidx)]
-            experimental[output_index] = (
-                field
-                - original_mean[source_position]
-                - temporal_mean
-                + filtered_mean[source_position]
-            )
+            experimental[output_index] = field - temporal_mean
+            if rollout.include_spatial_mean:
+                experimental[output_index] += (
+                    filtered_mean[source_position] - original_mean[source_position])
 
-    expected_mean = filtered_mean[positions]
-    reference_mean = (
-        rollout.reference[condition, :count, 0] / np.sqrt(rollout.n_space)
-    )
-    if not np.allclose(reference_mean, expected_mean, rtol=2e-5, atol=2e-4):
-        raise ValueError("Reference spatial mean does not match the experimental source.")
+    if rollout.include_spatial_mean:
+        expected_mean = filtered_mean[positions]
+        reference_mean = rollout.spatial_mean(rollout.reference[condition, :count])
+        if not np.allclose(reference_mean, expected_mean, rtol=2e-5, atol=2e-4):
+            raise ValueError("Reference spatial mean does not match the experimental source.")
 
     relative_time = rollout.time[condition, :count] - rollout.time[condition, 0]
     report = {
@@ -170,9 +150,12 @@ def _load_fields(
         "frames": count,
         "spatial_grid": [int(len(yidx)), int(len(xidx))],
         "spatial_mean_highpass_hz": rollout.spatial_mean_highpass_hz,
+        "spatial_mean_representation": rollout.spatial_mean_representation,
         "experimental_preprocessing": (
             "raw field - original 2-D frame spatial mean - saved temporal mean "
-            "+ saved 50 Hz high-pass 2-D spatial mean"
+            f"+ saved {rollout.spatial_mean_highpass_hz:g} Hz high-pass 2-D spatial mean"
+            if rollout.include_spatial_mean else
+            "cleaned raw field - saved temporal mean; spatial mean retained in POD modes"
         ),
         "shared_color_and_height_limits": True,
         "temporal_mean_restored": False,

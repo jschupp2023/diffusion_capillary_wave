@@ -6,6 +6,12 @@ import h5py
 import numpy as np
 
 from data_analysis.psd.pod_center_psd import infer_sampling_frequency
+from modelling.data_preparation.prepare_shared_pod_training import (
+    SPATIAL_MEAN_EMBEDDED,
+    SPATIAL_MEAN_OMITTED,
+    SPATIAL_MEAN_REPRESENTATIONS,
+    SPATIAL_MEAN_SEPARATE,
+)
 
 
 class Rollout:
@@ -33,11 +39,9 @@ class Rollout:
         if not isinstance(discard, int) or not 0 <= discard <= g.shape[2] - 4:
             raise ValueError("Discard must leave at least four samples per trajectory.")
         self.rank = int(self.metadata["rank"])
-        self.include_spatial_mean = bool(self.metadata.get("include_spatial_mean", True))
+        saved_include_spatial_mean = bool(self.metadata.get("include_spatial_mean", True))
         cutoff = self.metadata.get("spatial_mean_highpass_hz")
         self.spatial_mean_highpass_hz = None if cutoff is None else float(cutoff)
-        if g.shape[-1] != self.rank + int(self.include_spatial_mean):
-            raise ValueError("Metadata rank and spatial-mean convention do not match coordinate count.")
         if self.metadata["time_units"] not in ("s", "second", "seconds"):
             raise ValueError("Expected rollout times in seconds.")
         dt = float(self.metadata["physical_lag"])
@@ -59,8 +63,31 @@ class Rollout:
         self.discard = discard
         self.basis_path = Path(shared_basis or self.metadata["source_shared_basis"]).expanduser().resolve()
         with h5py.File(self.basis_path, "r") as basis:
-            if len(basis["pod/modes"]) < self.rank or not basis.attrs["instantaneous_spatial_mean_removed"]:
-                raise ValueError("Shared basis must have enough modes and have removed spatial means.")
+            if len(basis["pod/modes"]) < self.rank:
+                raise ValueError("Shared basis must have enough modes.")
+            means_removed = bool(basis.attrs["instantaneous_spatial_mean_removed"])
+            representation = self.metadata.get("spatial_mean_representation")
+            if representation is None:
+                representation = (
+                    SPATIAL_MEAN_SEPARATE if saved_include_spatial_mean else
+                    SPATIAL_MEAN_OMITTED if means_removed else
+                    SPATIAL_MEAN_EMBEDDED)
+            if representation not in SPATIAL_MEAN_REPRESENTATIONS:
+                raise ValueError("Unknown rollout spatial_mean_representation.")
+            if means_removed != (representation != SPATIAL_MEAN_EMBEDDED):
+                raise ValueError(
+                    "Rollout spatial-mean representation disagrees with the shared basis.")
+            self.spatial_mean_representation = representation
+            self.include_spatial_mean = representation == SPATIAL_MEAN_SEPARATE
+            self.spatial_mean_available = representation != SPATIAL_MEAN_OMITTED
+            self.pod_coordinate_offset = int(self.include_spatial_mean)
+            if g.shape[-1] != self.rank + self.pod_coordinate_offset:
+                raise ValueError(
+                    "Metadata rank and spatial-mean representation do not match coordinate count.")
+            if (self.spatial_mean_highpass_hz is not None
+                    and representation != SPATIAL_MEAN_SEPARATE):
+                raise ValueError(
+                    "A saved spatial-mean high-pass cutoff requires a separate mean coordinate.")
             self.modes = np.asarray(basis["pod/modes"][:self.rank], dtype=float)
             self.x, self.y = basis["grid/x"][:], basis["grid/y"][:]
             self.x_units, self.y_units = str(basis["grid/x"].attrs["units"]), str(basis["grid/y"].attrs["units"])
@@ -71,6 +98,32 @@ class Rollout:
         if self.modes.shape[1:] != (len(self.y), len(self.x)) or not np.isfinite(self.modes).all():
             raise ValueError("Invalid shared spatial modes or grid shape.")
         self.n_space = len(self.x) * len(self.y)
+        self.spatial_mean_weights = self.modes.reshape(self.rank, -1).mean(axis=1)
+
+    def pod_coefficients(self, coordinates):
+        values = np.asarray(coordinates)
+        expected = self.rank + self.pod_coordinate_offset
+        if values.shape[-1] != expected:
+            raise ValueError(f"Expected {expected} rollout coordinates on the last axis.")
+        return values[..., self.pod_coordinate_offset:]
+
+    def spatial_mean(self, coordinates):
+        """Return the physical frame spatial mean in rollout signal units."""
+        values = np.asarray(coordinates)
+        if self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE:
+            return values[..., 0] / np.sqrt(self.n_space)
+        if self.spatial_mean_representation == SPATIAL_MEAN_EMBEDDED:
+            return self.pod_coefficients(values) @ self.spatial_mean_weights
+        raise ValueError("The spatial mean was omitted from this rollout.")
+
+    def reconstruct(self, coordinates, modes=None):
+        """Reconstruct rank-limited fields without restoring the temporal mean."""
+        selected_modes = self.modes if modes is None else np.asarray(modes)
+        fields = self.pod_coefficients(coordinates) @ selected_modes.reshape(self.rank, -1)
+        fields = fields.reshape(*np.asarray(coordinates).shape[:-1], *selected_modes.shape[1:])
+        if self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE:
+            fields = fields + self.spatial_mean(coordinates)[..., None, None]
+        return fields
 
     def provenance(self):
         result = dict(rollout=str(self.path), shared_basis=str(self.basis_path), rank=self.rank,
@@ -79,7 +132,12 @@ class Rollout:
                       sampling_frequency_hz=self.fs, signal_units=self.units,
                       reference_repetitions=self.repetitions.tolist(),
                       coefficient_convention=("physical; coordinate 0 = sqrt(N) * spatial mean"
-                                              if self.include_spatial_mean else "physical shared POD coefficients only"),
+                                              if self.include_spatial_mean else
+                                              "physical shared POD coefficients; spatial mean embedded"
+                                              if self.spatial_mean_representation == SPATIAL_MEAN_EMBEDDED else
+                                              "physical shared POD coefficients; spatial mean omitted"),
+                      spatial_mean_representation=self.spatial_mean_representation,
+                      spatial_mean_available=self.spatial_mean_available,
                       temporal_mean_restored=False)
         result["spatial_mean_highpass_hz"] = self.spatial_mean_highpass_hz
         if "temporal_preprocessing" in self.metadata:

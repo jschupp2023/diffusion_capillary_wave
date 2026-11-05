@@ -30,6 +30,7 @@ env/
 /best_models/*
 /BLOB_id_deliverable/*
 /matlab_analysis/*
+/thesis_notes/*
 # POD data and plots (keep analysis scripts tracked)
 /pod_analysis/*
 !/pod_analysis/*.py

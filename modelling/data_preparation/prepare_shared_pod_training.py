@@ -6,13 +6,14 @@ validation (rounded, at least one each). Explicit validation_reps/test_reps
 choose holdouts; test_reps=[] disables test. At least one training rep is
 required. Splits exclude scaler/model fitting, not prior shared-basis fitting.
 
-By default coordinate zero is sqrt(N)*frame_spatial_mean, for the unit constant
-mode. Set spatial_mean_highpass_hz to select a high-pass trajectory previously
-stored under preprocessing/frame_spatial_mean_highpass instead. Set
-include_spatial_mean=False to return only the first `rank` shared POD
-coefficients. These project all retained local modes using saved basis-to-basis
-projections. Removed temporal mean fields remain removed. The model dimension
-is rank+1 by default or rank when the spatial mean is excluded.
+The coordinate convention is inferred from the shared basis preprocessing. If
+instantaneous spatial means were removed before POD (the legacy format),
+coordinate zero is sqrt(N)*frame_spatial_mean by default and the remaining
+coordinates are shared-POD coefficients. If they were not removed (the cleaned
+full-field format), the spatial mean is already embedded in the shared modes
+and all `rank` coordinates are POD coefficients. Set include_spatial_mean=False
+only to omit the separate legacy mean coordinate. A spatial-mean high-pass
+selection is valid only for the legacy separate-coordinate format.
 
 read_coordinates and iter_transitions return physical float64 coordinates.
 Transitions preserve history and never cross repetitions. cache_coordinates
@@ -43,6 +44,14 @@ from scipy.signal import firwin, resample_poly
 from modelling.data_preparation.shared_pod_basis import DEFAULT_DATA_ROOT, PREPROCESSING_FLAGS
 
 
+SPATIAL_MEAN_SEPARATE = "separate_coordinate"
+SPATIAL_MEAN_EMBEDDED = "embedded_in_pod"
+SPATIAL_MEAN_OMITTED = "omitted"
+SPATIAL_MEAN_REPRESENTATIONS = {
+    SPATIAL_MEAN_SEPARATE, SPATIAL_MEAN_EMBEDDED, SPATIAL_MEAN_OMITTED,
+}
+
+
 def select_basis(directory: Path, rank: int, explicit: Path | None) -> Path:
     if explicit is not None:
         return explicit.expanduser().resolve()
@@ -64,11 +73,10 @@ def spatial_mean_dataset_path(cutoff_hz):
 
 
 def inspect_sources(basis, directory, experiment, rank, validation_reps,
-                    spatial_mean_dataset, spatial_mean_highpass_hz):
+                    spatial_mean_dataset, spatial_mean_highpass_hz,
+                    spatial_mean_representation):
     if str(basis.attrs["experiment"]) != experiment:
         raise ValueError("Shared basis belongs to a different experiment.")
-    if not bool(basis.attrs["instantaneous_spatial_mean_removed"]):
-        raise ValueError("Shared POD must remove instantaneous spatial means before adding a constant mode.")
     modes = basis["pod/modes"]
     if modes.ndim != 3 or not 1 <= rank <= len(modes):
         raise ValueError("Requested rank exceeds the saved shared basis or modes have invalid dimensions.")
@@ -98,17 +106,19 @@ def inspect_sources(basis, directory, experiment, rank, validation_reps,
             local_rank = int(group.attrs["input_rank"])
             n_frames = int(source.attrs["n_frames"])
             coefficients = source["reduced/coefficients"]
+            require_separate_mean = spatial_mean_representation == SPATIAL_MEAN_SEPARATE
             if (n_frames < 1 or coefficients.ndim != 2 or coefficients.shape[0] != n_frames
                     or coefficients.shape[1] < local_rank
                     or source["pod/modes"].shape[1:] != shape
                     or source["pod/modes"].shape[0] < local_rank
-                    or spatial_mean_dataset not in source
-                    or source[spatial_mean_dataset].shape != (n_frames,)
+                    or (require_separate_mean and spatial_mean_dataset not in source)
+                    or (require_separate_mean and source[spatial_mean_dataset].shape != (n_frames,))
                     or source["preprocessing/temporal_mean_field"].shape != shape
                     or source["grid/time"].shape != (n_frames,)):
                 raise ValueError(f"Invalid source dimensions in {path}.")
             signal_units = str(coefficients.attrs["units"])
-            if (str(source[spatial_mean_dataset].attrs.get("units", "")) != signal_units
+            if ((require_separate_mean
+                 and str(source[spatial_mean_dataset].attrs.get("units", "")) != signal_units)
                     or str(source["preprocessing/temporal_mean_field"].attrs["units"]) != signal_units):
                 raise ValueError(f"Spatial mean and POD coefficients have different units in {path}.")
             if spatial_mean_highpass_hz is not None:
@@ -198,7 +208,8 @@ class SharedPODTrainingData:
 
     def __init__(self, experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
                  shared_basis=None, validation_reps=None, test_reps=None, batch_size=2048,
-                 output_dtype="float32", include_spatial_mean=True,
+                 output_dtype="float32", include_spatial_mean=None,
+                 spatial_mean_representation="auto",
                  spatial_mean_highpass_hz=None, downsample_factor=1,
                  downsample_edge_trim=32):
         if not isinstance(rank, (int, np.integer)) or rank < 1:
@@ -225,21 +236,60 @@ class SharedPODTrainingData:
             raise ValueError("Output dtype must be float32 or float64.")
         self.experiment = experiment
         self.rank = int(rank)
-        self.include_spatial_mean = bool(include_spatial_mean)
+        if include_spatial_mean is not None and not isinstance(
+                include_spatial_mean, (bool, np.bool_)):
+            raise ValueError("include_spatial_mean must be true, false, or None (automatic).")
+        if (spatial_mean_representation != "auto"
+                and spatial_mean_representation not in SPATIAL_MEAN_REPRESENTATIONS):
+            raise ValueError("Unknown spatial_mean_representation.")
         if spatial_mean_highpass_hz is not None:
             spatial_mean_highpass_hz = float(spatial_mean_highpass_hz)
             if not np.isfinite(spatial_mean_highpass_hz) or spatial_mean_highpass_hz <= 0:
                 raise ValueError("spatial_mean_highpass_hz must be finite and positive.")
-            if not self.include_spatial_mean:
-                raise ValueError("A spatial-mean high-pass cutoff requires include_spatial_mean=True.")
         self.spatial_mean_highpass_hz = spatial_mean_highpass_hz
         self.spatial_mean_dataset = spatial_mean_dataset_path(spatial_mean_highpass_hz)
-        self.n_coordinates = self.rank + int(self.include_spatial_mean)
         self.batch_size = int(batch_size)
         directory = Path(data_root).expanduser() / experiment
         self.basis_path = select_basis(directory, self.rank,
                                        Path(shared_basis) if shared_basis is not None else None)
         with h5py.File(self.basis_path, "r") as basis:
+            means_removed = bool(basis.attrs["instantaneous_spatial_mean_removed"])
+            if spatial_mean_representation == "auto":
+                if means_removed:
+                    self.spatial_mean_representation = (
+                        SPATIAL_MEAN_SEPARATE
+                        if include_spatial_mean is not False else SPATIAL_MEAN_OMITTED)
+                else:
+                    if include_spatial_mean is False:
+                        raise ValueError(
+                            "The spatial mean is embedded in the POD modes and cannot be "
+                            "removed with include_spatial_mean=False. Use the automatic "
+                            "configuration (omit that option).")
+                    self.spatial_mean_representation = SPATIAL_MEAN_EMBEDDED
+            else:
+                self.spatial_mean_representation = spatial_mean_representation
+                # Preserve the legacy, documented override used by callers that
+                # reopen a separate-mean source_config and request POD-only data.
+                if (self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE
+                        and include_spatial_mean is False):
+                    self.spatial_mean_representation = SPATIAL_MEAN_OMITTED
+            if (means_removed
+                    != (self.spatial_mean_representation != SPATIAL_MEAN_EMBEDDED)):
+                raise ValueError(
+                    "spatial_mean_representation disagrees with the shared-basis preprocessing.")
+            if (self.spatial_mean_representation == SPATIAL_MEAN_OMITTED
+                    and include_spatial_mean is True):
+                raise ValueError("An omitted spatial mean cannot be requested as included.")
+            self.include_spatial_mean = (
+                self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE)
+            self.spatial_mean_available = (
+                self.spatial_mean_representation != SPATIAL_MEAN_OMITTED)
+            self.pod_coordinate_offset = int(self.include_spatial_mean)
+            self.n_coordinates = self.rank + self.pod_coordinate_offset
+            if (self.spatial_mean_highpass_hz is not None
+                    and self.spatial_mean_representation != SPATIAL_MEAN_SEPARATE):
+                raise ValueError(
+                    "A spatial-mean high-pass cutoff requires the legacy separate-coordinate format.")
             numbers = sorted(int(name.rsplit("_rep", 1)[1]) for name in basis["repetitions"])
             count = max(1, round(.15 * len(numbers)))
             if test_reps is None:
@@ -255,6 +305,7 @@ class SharedPODTrainingData:
             records, units = inspect_sources(
                 basis, directory, experiment, self.rank, validation_reps,
                 self.spatial_mean_dataset, self.spatial_mean_highpass_hz,
+                self.spatial_mean_representation,
             )
             for record in records:
                 if record["rep"] in test_reps:
@@ -275,7 +326,10 @@ class SharedPODTrainingData:
                 if not np.isfinite(modes).all():
                     raise ValueError("Nonfinite shared spatial modes.")
                 self.constant_mode_overlap[start:stop] = modes.sum(axis=1) / np.sqrt(self.n_space)
-            if np.max(np.abs(self.constant_mode_overlap)) > 1e-3:
+            self.spatial_mean_weights = self.constant_mode_overlap / np.sqrt(self.n_space)
+            self.spatial_mean_weights.setflags(write=False)
+            if (self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE
+                    and np.max(np.abs(self.constant_mode_overlap)) > 1e-3):
                 raise ValueError("Shared modes contain a significant constant component; cannot append an independent mean mode.")
             self._projections = {}
             for record in self._records:
@@ -301,8 +355,9 @@ class SharedPODTrainingData:
         self._coordinate_cache = {}
         self.source_config = dict(experiment=experiment, rank=self.rank,
                                   data_root=str(directory.parent.resolve()), shared_basis=str(self.basis_path),
-                                  validation_reps=list(map(int, validation_reps)), test_reps=list(map(int, test_reps)))
-        if not self.include_spatial_mean:
+                                  validation_reps=list(map(int, validation_reps)), test_reps=list(map(int, test_reps)),
+                                  spatial_mean_representation=self.spatial_mean_representation)
+        if self.spatial_mean_representation == SPATIAL_MEAN_OMITTED:
             self.source_config["include_spatial_mean"] = False
         if self.spatial_mean_highpass_hz is not None:
             self.source_config["spatial_mean_highpass_hz"] = self.spatial_mean_highpass_hz
@@ -381,6 +436,24 @@ class SharedPODTrainingData:
         if not np.isfinite(values).all():
             raise ValueError(f"Nonfinite projected data in {name}.")
         return time, values
+
+    def pod_coefficients(self, coordinates):
+        """Return the shared-POD coefficient block for either data format."""
+        values = np.asarray(coordinates)
+        if values.shape[-1] != self.n_coordinates:
+            raise ValueError(f"Expected {self.n_coordinates} coordinates on the last axis.")
+        return values[..., self.pod_coordinate_offset:]
+
+    def spatial_mean(self, coordinates):
+        """Return the physical frame spatial mean in signal units."""
+        values = np.asarray(coordinates)
+        if values.shape[-1] != self.n_coordinates:
+            raise ValueError(f"Expected {self.n_coordinates} coordinates on the last axis.")
+        if self.spatial_mean_representation == SPATIAL_MEAN_SEPARATE:
+            return values[..., 0] / np.sqrt(self.n_space)
+        if self.spatial_mean_representation == SPATIAL_MEAN_EMBEDDED:
+            return values @ self.spatial_mean_weights
+        raise ValueError("The spatial mean was omitted from these coordinates.")
 
     def cache_coordinates(self, max_gib=2.):
         """Cache train/validation in RAM if the full cache fits; never write data.
@@ -475,9 +548,15 @@ class SharedPODTrainingData:
                     frame_shape=list(self.frame_shape), native_dt=self.native_dt,
                     units=[self.signal_units, self.time_units], splits={k: list(v) for k, v in self.splits.items()},
                     temporal_mean_removed=self.temporal_mean_field_removed,
-                    coordinate_order=("sqrt(N)*spatial_mean, shared POD coefficients" if self.include_spatial_mean
-                                      else "shared POD coefficients only"), sources=sources)
-        if not self.include_spatial_mean:
+                    coordinate_order=("sqrt(N)*spatial_mean, shared POD coefficients"
+                                      if self.include_spatial_mean else
+                                      "shared POD coefficients with spatial mean embedded"
+                                      if self.spatial_mean_representation == SPATIAL_MEAN_EMBEDDED else
+                                      "shared POD coefficients; spatial mean omitted"),
+                    sources=sources)
+        if self.spatial_mean_representation == SPATIAL_MEAN_EMBEDDED:
+            signature["spatial_mean_representation"] = self.spatial_mean_representation
+        if self.spatial_mean_representation == SPATIAL_MEAN_OMITTED:
             signature["include_spatial_mean"] = False
         if self.spatial_mean_highpass_hz is not None:
             signature["spatial_mean_highpass_hz"] = self.spatial_mean_highpass_hz
@@ -547,7 +626,8 @@ class SharedPODTrainingData:
 
 def prepare_training_data(experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
                           shared_basis=None, validation_reps=None, test_reps=None,
-                          batch_size=2048, output_dtype="float32", include_spatial_mean=True,
+                          batch_size=2048, output_dtype="float32", include_spatial_mean=None,
+                          spatial_mean_representation="auto",
                           spatial_mean_highpass_hz=None, downsample_factor=1,
                           downsample_edge_trim=32):
     """Return a fitted SharedPODTrainingData for use across training epochs.
@@ -560,6 +640,7 @@ def prepare_training_data(experiment, rank, *, data_root=DEFAULT_DATA_ROOT,
         experiment, rank, data_root=data_root, shared_basis=shared_basis,
         validation_reps=validation_reps, test_reps=test_reps, batch_size=batch_size,
         output_dtype=output_dtype, include_spatial_mean=include_spatial_mean,
+        spatial_mean_representation=spatial_mean_representation,
         spatial_mean_highpass_hz=spatial_mean_highpass_hz,
         downsample_factor=downsample_factor, downsample_edge_trim=downsample_edge_trim,
     ).fit_standardization()

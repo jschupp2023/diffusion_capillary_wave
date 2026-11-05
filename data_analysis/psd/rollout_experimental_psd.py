@@ -31,7 +31,7 @@ from modelling.data_preparation.prepare_shared_pod_training import (
     spatial_mean_dataset_path,
 )
 from .pod_center_psd import select_point
-from .rollout_psd import ensemble_psd, point_signals
+from .rollout_psd import embedded_point_signals, ensemble_psd, point_signals
 
 
 def _text(value: object) -> str:
@@ -78,7 +78,9 @@ def _matching_experimental_signals(
                          "Use plot_rollout/psd_peaks with the saved filtered reference for downsampled runs.")
     if rollout.start_index is None:
         raise ValueError("Rollout does not contain source start indices.")
-    if rollout.spatial_mean_highpass_hz is None:
+    if not rollout.spatial_mean_available:
+        raise ValueError("Experimental PSD comparison requires the physical spatial mean.")
+    if rollout.include_spatial_mean and rollout.spatial_mean_highpass_hz is None:
         raise ValueError("This diagnostic expects a saved spatial-mean high-pass cutoff.")
 
     repetition = pod_path.parent.name
@@ -97,24 +99,28 @@ def _matching_experimental_signals(
             raise ValueError(
                 f"POD source is {recorded_raw}, but raw input is {raw_path.name}."
             )
-        required = (
+        required = [
             "grid/time",
             "grid/x",
             "grid/y",
             "source/frame_number",
             "preprocessing/frame_spatial_mean",
-            spatial_mean_dataset_path(rollout.spatial_mean_highpass_hz),
-        )
+            "preprocessing/temporal_mean_field",
+        ]
+        if rollout.include_spatial_mean:
+            required.append(spatial_mean_dataset_path(rollout.spatial_mean_highpass_hz))
         missing = [name for name in required if name not in pod]
         if missing:
             raise KeyError(f"POD file is missing: {', '.join(missing)}")
         pod_time = np.asarray(pod["grid/time"], dtype=np.float64)
         frame_number = np.asarray(pod["source/frame_number"], dtype=np.int64)
         raw_mean = np.asarray(pod["preprocessing/frame_spatial_mean"], dtype=np.float64)
-        filtered_mean = np.asarray(
+        filtered_mean = (np.asarray(
             pod[spatial_mean_dataset_path(rollout.spatial_mean_highpass_hz)],
             dtype=np.float64,
-        )
+        ) if rollout.include_spatial_mean else None)
+        temporal_mean = np.asarray(
+            pod["preprocessing/temporal_mean_field"], dtype=np.float64)
         pod_x = np.asarray(pod["grid/x"], dtype=np.float64)
         pod_y = np.asarray(pod["grid/y"], dtype=np.float64)
         signal_units = _text(pod["preprocessing/frame_spatial_mean"].attrs.get("units", ""))
@@ -147,17 +153,29 @@ def _matching_experimental_signals(
             center_values[row] = float(frames[key][y_index, x_index])
     raw_center = center_values[inverse].reshape(positions.shape)
     original_mean = raw_mean[positions]
-    highpass_mean = filtered_mean[positions]
-
-    # Coordinate zero must reproduce exactly the stored filtered spatial mean.
-    reference_mean = rollout.reference[selected_conditions, :, 0] / np.sqrt(rollout.n_space)
-    if not np.allclose(reference_mean, highpass_mean, rtol=2e-5, atol=2e-4):
-        raise ValueError("Rollout reference spatial mean does not match the POD source.")
-
+    if rollout.include_spatial_mean:
+        selected_mean = filtered_mean[positions]
+        reference_mean = rollout.spatial_mean(rollout.reference[selected_conditions])
+        if not np.allclose(reference_mean, selected_mean, rtol=2e-5, atol=2e-4):
+            raise ValueError("Rollout reference spatial mean does not match the POD source.")
+        center = raw_center - original_mean + selected_mean
+        center_without_mean = raw_center - original_mean
+        preprocessing = (
+            "raw center - original 2-D frame spatial mean + saved filtered 2-D "
+            f"spatial mean at {rollout.spatial_mean_highpass_hz:g} Hz")
+    else:
+        # The cleaned full-field POD removes only its temporal mean field. Its
+        # instantaneous spatial mean remains distributed across the POD modes.
+        selected_mean = original_mean[positions] - temporal_mean.mean()
+        center = raw_center - temporal_mean[y_index, x_index]
+        center_without_mean = center - selected_mean
+        preprocessing = (
+            "cleaned raw center - saved temporal mean field; instantaneous "
+            "spatial mean retained in POD modes")
     experimental = {
-        "center": raw_center - original_mean + highpass_mean,
-        "center_without_spatial_mean": raw_center - original_mean,
-        "spatial_mean": highpass_mean,
+        "center": center,
+        "center_without_spatial_mean": center_without_mean,
+        "spatial_mean": selected_mean,
     }
     provenance = {
         "raw_input": str(raw_path),
@@ -165,10 +183,8 @@ def _matching_experimental_signals(
         "repetition": repetition,
         "selected_condition_indices": selected_conditions.tolist(),
         "selected_start_indices": rollout.start_index[selected_conditions].tolist(),
-        "experimental_preprocessing": (
-            "raw center - original 2-D frame spatial mean + saved filtered 2-D "
-            f"spatial mean at {rollout.spatial_mean_highpass_hz:g} Hz"
-        ),
+        "experimental_preprocessing": preprocessing,
+        "spatial_mean_representation": rollout.spatial_mean_representation,
         "raw_center_index": [int(y_index), int(x_index)],
         "raw_center_coordinate": [float(raw_info.y[y_index]), float(raw_info.x[x_index])],
         "signal_units": signal_units,
@@ -203,12 +219,16 @@ def analyze(
 
     generated_coordinates = rollout.generated[selected_conditions]
     reference_coordinates = rollout.reference[selected_conditions]
-    generated = point_signals(
-        generated_coordinates, rollout.modes, rollout.n_space, selected,
-    )
-    reference = point_signals(
-        reference_coordinates, rollout.modes, rollout.n_space, selected,
-    )
+    if rollout.include_spatial_mean:
+        generated = point_signals(
+            generated_coordinates, rollout.modes, rollout.n_space, selected)
+        reference = point_signals(
+            reference_coordinates, rollout.modes, rollout.n_space, selected)
+    else:
+        generated = embedded_point_signals(
+            generated_coordinates, rollout.modes, selected)
+        reference = embedded_point_signals(
+            reference_coordinates, rollout.modes, selected)
     trimmed_reference = None
     if include_trimmed_reference:
         reference_mask, trim_report = reference_training_trim_population(rollout)

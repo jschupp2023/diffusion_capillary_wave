@@ -32,6 +32,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -39,6 +40,10 @@ import sys
 import time
 import traceback
 from typing import TextIO
+
+# Some cleaning dependencies import Matplotlib for optional diagnostics. Keep
+# its cache off read-only home directories on compute nodes.
+os.environ.setdefault("MPLCONFIGDIR", f"/tmp/capillarywave-matplotlib-{os.getuid()}")
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -110,7 +115,7 @@ def parse_args() -> argparse.Namespace:
         "--method",
         type=str,
         default="integer",
-        choices=["integer", "poisson"],
+        choices=["integer", "poisson", "hybrid"],
         help="Spatial restoration method (default: integer).",
     )
     parser.add_argument(
@@ -173,6 +178,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Combined log path (default: timestamped file in output root).",
     )
+    parser.add_argument(
+        "--audit-summary",
+        type=Path,
+        help=(
+            "JSON from audit_cleaning_changes.py. Only recordings for which the "
+            "complete audit accepted a discrete correction are materialized."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -181,6 +194,7 @@ def discover_jobs(
     output_root: Path,
     powers: list[str] | None = None,
     reps: list[int] | None = None,
+    method: str = "integer",
 ) -> tuple[list[CleanJob], list[DiscoveryIssue]]:
     """Discover valid inputs using the expected two-level directory layout."""
     jobs: list[CleanJob] = []
@@ -231,7 +245,10 @@ def discover_jobs(
 
             input_path = input_files[0]
             relative_directory = realization_directory.relative_to(input_root)
-            output_filename = f"{input_path.stem}_cleaned_hp50hz.hdf5"
+            cleaner_tag = "_hybrid" if method == "hybrid" else ""
+            output_filename = (
+                f"{input_path.stem}_cleaned{cleaner_tag}_hp50hz.hdf5"
+            )
             output_path = output_root / relative_directory / output_filename
 
             jobs.append(
@@ -255,6 +272,69 @@ def announce(log: TextIO, message: str) -> None:
     log.flush()
 
 
+def select_jobs_from_audit(
+    jobs: list[CleanJob],
+    audit_path: Path,
+    *,
+    q: float,
+    tau: float,
+    method: str,
+    temporal_align: bool,
+) -> tuple[list[CleanJob], list[CleanJob]]:
+    """Validate an audit manifest and partition jobs into materialize/reuse-raw."""
+    audit_path = audit_path.expanduser().resolve()
+    payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != "1.0":
+        raise ValueError(
+            f"Unsupported audit schema in {audit_path}: {payload.get('schema_version')!r}"
+        )
+    if payload.get("highpass_filter_included") is not False:
+        raise ValueError("Audit manifest must explicitly exclude the high-pass filter.")
+
+    settings = payload.get("settings", {})
+    expected = {
+        "spatial_method": method,
+        "temporal_alignment_audited": bool(temporal_align),
+    }
+    for key, value in expected.items():
+        if settings.get(key) != value:
+            raise ValueError(
+                f"Audit setting {key}={settings.get(key)!r} does not match batch setting {value!r}."
+            )
+    for key, value in (("q_um", q), ("tau_um", tau)):
+        if not math.isclose(float(settings.get(key, math.nan)), float(value), rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError(
+                f"Audit setting {key}={settings.get(key)!r} does not match batch setting {value!r}."
+            )
+
+    records: dict[Path, dict] = {}
+    for record in payload.get("recordings", []):
+        path = Path(record["input_file"]).expanduser().resolve()
+        if path in records:
+            raise ValueError(f"Duplicate input in audit manifest: {path}")
+        records[path] = record
+
+    selected: list[CleanJob] = []
+    reuse_raw: list[CleanJob] = []
+    for job in jobs:
+        input_path = job.input_path.expanduser().resolve()
+        if input_path not in records:
+            raise ValueError(f"Selected batch input is missing from audit manifest: {input_path}")
+        record = records[input_path]
+        if not record.get("complete_recording") or not record.get("deployment_decision_valid"):
+            raise ValueError(f"Audit is partial or not deployment-valid for {input_path}")
+        stat = input_path.stat()
+        if int(record.get("source_size_bytes", -1)) != stat.st_size:
+            raise ValueError(f"Input size changed since audit: {input_path}")
+        if int(record.get("source_mtime_ns", -1)) != stat.st_mtime_ns:
+            raise ValueError(f"Input modification time changed since audit: {input_path}")
+        if record.get("requires_materialized_cleaned_dataset"):
+            selected.append(job)
+        else:
+            reuse_raw.append(job)
+    return selected, reuse_raw
+
+
 def main() -> None:
     args = parse_args()
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -268,10 +348,22 @@ def main() -> None:
         output_root=args.output_root,
         powers=args.powers,
         reps=args.reps,
+        method=args.method,
     )
 
     if args.max_files is not None and args.max_files > 0:
         jobs = jobs[:args.max_files]
+
+    audit_reuse_raw: list[CleanJob] = []
+    if args.audit_summary is not None:
+        jobs, audit_reuse_raw = select_jobs_from_audit(
+            jobs,
+            args.audit_summary,
+            q=args.q,
+            tau=args.tau,
+            method=args.method,
+            temporal_align=args.temporal_align,
+        )
 
     with open(args.log_file, "a", encoding="utf-8") as log:
         announce(log, "=== Data Cleaning Batch Runner Initialized ===")
@@ -280,6 +372,12 @@ def main() -> None:
         announce(log, f"Selected Powers: {args.powers or 'ALL'}")
         announce(log, f"Discovered Jobs: {len(jobs)}")
         announce(log, f"Discovery Issues: {len(issues)}")
+        if args.audit_summary is not None:
+            announce(log, f"Audit Summary: {args.audit_summary}")
+            announce(
+                log,
+                f"Audit selection: materialize {len(jobs)} | reuse raw {len(audit_reuse_raw)}",
+            )
 
         for issue in issues:
             announce(log, f"  Issue: {issue.directory} -> {issue.reason}")
@@ -292,6 +390,13 @@ def main() -> None:
                 announce(log, f"[{i:3d}/{len(jobs):3d}] {job.condition}/{job.realization} ({size_mb:.1f} MB){exists_tag}")
                 announce(log, f"        In:  {job.input_path}")
                 announce(log, f"        Out: {job.output_path}")
+            if audit_reuse_raw:
+                announce(
+                    log,
+                    f"\n--- Audit-bypassed recordings ({len(audit_reuse_raw)}; keep raw) ---",
+                )
+                for job in audit_reuse_raw:
+                    announce(log, f"        {job.condition}/{job.realization}: {job.input_path}")
             announce(log, "\nDry run complete. No files were modified.")
             return
 
@@ -374,6 +479,9 @@ def main() -> None:
             "succeeded": succeeded,
             "skipped": skipped,
             "failed": failed,
+            "audit_summary": str(args.audit_summary) if args.audit_summary else None,
+            "audit_reuse_raw_count": len(audit_reuse_raw),
+            "audit_reuse_raw_inputs": [str(job.input_path) for job in audit_reuse_raw],
             "total_elapsed_sec": batch_elapsed,
             "jobs": job_results,
         }, indent=2) + "\n")
@@ -382,4 +490,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
