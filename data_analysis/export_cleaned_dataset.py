@@ -15,12 +15,14 @@ Pipeline stages:
 from __future__ import annotations
 
 import argparse
+import atexit
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 import gc
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -94,6 +96,58 @@ SPATIAL_QC_FIELDS = (
 )
 
 
+# Process-local state initialized once by ProcessPoolExecutor. Keeping the
+# read-only HDF5 handle and scratch mapping open for the lifetime of a worker
+# avoids reopening the recording for every chunk. Workers only write to
+# disjoint frame ranges in the raw memmap; HDF5 output remains single-writer.
+_SPATIAL_WORKER_H5: h5py.File | None = None
+_SPATIAL_WORKER_MAIN: h5py.Group | None = None
+_SPATIAL_WORKER_MMAP: np.memmap | None = None
+_SPATIAL_WORKER_Q: float | None = None
+_SPATIAL_WORKER_TAU: float | None = None
+_SPATIAL_WORKER_METHOD: str | None = None
+
+
+def _close_spatial_worker() -> None:
+    """Release process-local worker resources at interpreter shutdown."""
+    global _SPATIAL_WORKER_H5, _SPATIAL_WORKER_MAIN, _SPATIAL_WORKER_MMAP
+    _SPATIAL_WORKER_MAIN = None
+    if _SPATIAL_WORKER_H5 is not None:
+        _SPATIAL_WORKER_H5.close()
+        _SPATIAL_WORKER_H5 = None
+    if _SPATIAL_WORKER_MMAP is not None:
+        # Do not flush the complete shared file from every worker. The parent
+        # waits for all chunks and performs one flush before later stages.
+        del _SPATIAL_WORKER_MMAP
+        _SPATIAL_WORKER_MMAP = None
+
+
+def _init_spatial_worker(
+    input_path_str: str,
+    mmap_path_str: str,
+    mmap_shape: tuple[int, int, int],
+    q: float,
+    tau: float,
+    method: str,
+) -> None:
+    """Open worker-local input and shared scratch handles exactly once."""
+    global _SPATIAL_WORKER_H5, _SPATIAL_WORKER_MAIN, _SPATIAL_WORKER_MMAP
+    global _SPATIAL_WORKER_Q, _SPATIAL_WORKER_TAU, _SPATIAL_WORKER_METHOD
+
+    _SPATIAL_WORKER_H5 = h5py.File(input_path_str, "r")
+    _SPATIAL_WORKER_MAIN = _SPATIAL_WORKER_H5["main"]
+    _SPATIAL_WORKER_MMAP = np.memmap(
+        mmap_path_str,
+        dtype=np.float32,
+        mode="r+",
+        shape=mmap_shape,
+    )
+    _SPATIAL_WORKER_Q = float(q)
+    _SPATIAL_WORKER_TAU = float(tau)
+    _SPATIAL_WORKER_METHOD = method
+    atexit.register(_close_spatial_worker)
+
+
 def hybrid_cliff_gate_diagnostics(
     frame: np.ndarray,
     tau: float,
@@ -145,6 +199,37 @@ def _restore_frame_hybrid(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Apply the validated conservative hybrid spatial restoration to one frame."""
     p = HYBRID_PARAMETERS
+    gate = hybrid_cliff_gate_diagnostics(frame, tau)
+    gate_passed = bool(gate["gate_passed"])
+    raw_max = float(gate["raw_max_gradient_um"])
+
+    # The hybrid cleaner cannot alter a frame unless the cliff gate passes.
+    # Avoid all wrapped-phase, residue, and mask work on this exact fast path.
+    # Mask-only diagnostics are NaN because they were deliberately not
+    # evaluated; decision and gradient diagnostics remain complete.
+    if not gate_passed:
+        review_bits = 4 if raw_max > 2 * tau else 0
+        qc_values = {
+            "modified_fraction": 0.0,
+            "mask_fraction": np.nan,
+            "initial_mask_fraction": np.nan,
+            "residue_mask_fraction": np.nan,
+            "cliff_gate_passed": 0.0,
+            "raw_cliff_edge_fraction": float(gate["cliff_edge_fraction"]),
+            "largest_cliff_component_pixels": float(
+                gate["largest_component_pixels"]
+            ),
+            "boundary_growth_added_pixels": 0.0,
+            "boundary_growth_converged": 1.0,
+            "unresolved_boundary_violation_pixels": 0.0,
+            "raw_max_gradient_um": raw_max,
+            "restored_max_gradient_um": raw_max,
+            "review_flag_bits": float(review_bits),
+        }
+        return frame, np.asarray(
+            [qc_values[field] for field in SPATIAL_QC_FIELDS], dtype=np.float64
+        )
+
     phase, _, residue_pixels, residue_mask = wrapped_phase_quality(
         frame,
         q,
@@ -167,13 +252,11 @@ def _restore_frame_hybrid(
         int(p["min_mask_component_pixels"]),
     )
 
-    gate = hybrid_cliff_gate_diagnostics(frame, tau)
     cliff_edge_fraction = float(gate["cliff_edge_fraction"])
     largest_component = int(gate["largest_component_pixels"])
-    gate_passed = bool(gate["gate_passed"])
 
     mask = initial_mask.copy()
-    if gate_passed and np.any(mask) and not np.all(mask):
+    if np.any(mask) and not np.all(mask):
         _, cycles, mask, solver = harmonic_reference_with_boundary_growth(
             frame,
             mask,
@@ -211,9 +294,6 @@ def _restore_frame_hybrid(
         review_bits |= 1
     if not growth_converged:
         review_bits |= 2
-    raw_max = float(gate["raw_max_gradient_um"])
-    if not gate_passed and raw_max > 2 * tau:
-        review_bits |= 4
     if np.mean(mask) > 0.70:
         review_bits |= 8
     if gate_passed and not np.any(mask):
@@ -240,53 +320,60 @@ def _restore_frame_hybrid(
 
 
 def _process_chunk_worker(
-    input_path_str: str,
     start_idx: int,
     end_idx: int,
-    q: float,
-    tau: float,
-    method: str = "integer",
-) -> tuple[int, int, np.ndarray, int, np.ndarray, np.ndarray]:
-    """Worker to restore a chunk of frames and compute spatial tracking channels."""
+) -> tuple[int, int, int, np.ndarray, np.ndarray]:
+    """Restore one range directly into shared scratch and return compact QC."""
+    if (
+        _SPATIAL_WORKER_MAIN is None
+        or _SPATIAL_WORKER_MMAP is None
+        or _SPATIAL_WORKER_Q is None
+        or _SPATIAL_WORKER_TAU is None
+        or _SPATIAL_WORKER_METHOD is None
+    ):
+        raise RuntimeError("Spatial worker was not initialized.")
+
+    main_grp = _SPATIAL_WORKER_MAIN
+    mmap_spatial = _SPATIAL_WORKER_MMAP
+    q = _SPATIAL_WORKER_Q
+    tau = _SPATIAL_WORKER_TAU
+    method = _SPATIAL_WORKER_METHOD
     n_frames = end_idx - start_idx
-    with h5py.File(input_path_str, "r") as h5_in:
-        main_grp = h5_in["main"]
-        first_key = _frame_key(start_idx)
-        first_shape = main_grp[first_key].shape
-        cleaned = np.empty((n_frames, *first_shape), dtype=np.float32)
-        channels = np.empty((n_frames, 6), dtype=np.float64)
-        spatial_qc = np.full(
-            (n_frames, len(SPATIAL_QC_FIELDS)), np.nan, dtype=np.float64
-        )
-        n_modified = 0
+    channels = np.empty((n_frames, 6), dtype=np.float64)
+    spatial_qc = np.full(
+        (n_frames, len(SPATIAL_QC_FIELDS)), np.nan, dtype=np.float64
+    )
+    n_modified = 0
 
-        for i in range(n_frames):
-            frame_num = start_idx + i
-            key = _frame_key(frame_num)
-            raw = np.asarray(main_grp[key], dtype=np.float32)
-            if method == "hybrid":
-                restored, frame_qc = _restore_frame_hybrid(raw, q=q, tau=tau)
-                spatial_qc[i] = frame_qc
-                was_modified = bool(frame_qc[SPATIAL_QC_FIELDS.index("modified_fraction")] > 0)
-            else:
-                res = restore_frame_poisson(raw, q=q, tau=tau, method=method)
-                restored = res.restored
-                was_modified = res.was_modified
-                spatial_qc[i, SPATIAL_QC_FIELDS.index("modified_fraction")] = (
-                    res.pct_pixels_modified / 100.0
-                )
-                spatial_qc[i, SPATIAL_QC_FIELDS.index("raw_max_gradient_um")] = (
-                    res.orig_max_dx
-                )
-                spatial_qc[i, SPATIAL_QC_FIELDS.index("restored_max_gradient_um")] = (
-                    res.rest_max_dx
-                )
-            cleaned[i] = restored
-            channels[i] = extract_spatial_channels(restored)
-            if was_modified:
-                n_modified += 1
+    for i in range(n_frames):
+        frame_num = start_idx + i
+        key = _frame_key(frame_num)
+        raw = np.asarray(main_grp[key], dtype=np.float32)
+        if method == "hybrid":
+            restored, frame_qc = _restore_frame_hybrid(raw, q=q, tau=tau)
+            spatial_qc[i] = frame_qc
+            was_modified = bool(
+                frame_qc[SPATIAL_QC_FIELDS.index("modified_fraction")] > 0
+            )
+        else:
+            res = restore_frame_poisson(raw, q=q, tau=tau, method=method)
+            restored = res.restored
+            was_modified = res.was_modified
+            spatial_qc[i, SPATIAL_QC_FIELDS.index("modified_fraction")] = (
+                res.pct_pixels_modified / 100.0
+            )
+            spatial_qc[i, SPATIAL_QC_FIELDS.index("raw_max_gradient_um")] = (
+                res.orig_max_dx
+            )
+            spatial_qc[i, SPATIAL_QC_FIELDS.index("restored_max_gradient_um")] = (
+                res.rest_max_dx
+            )
+        mmap_spatial[frame_num] = restored
+        channels[i] = extract_spatial_channels(restored)
+        if was_modified:
+            n_modified += 1
 
-    return start_idx, end_idx, cleaned, n_modified, channels, spatial_qc
+    return start_idx, end_idx, n_modified, channels, spatial_qc
 
 
 def export_cleaned_dataset(
@@ -303,6 +390,7 @@ def export_cleaned_dataset(
     scratch_dir: Path | None = None,
     max_frames: int | None = None,
     overwrite: bool = False,
+    stage_input_to_scratch: bool = False,
 ) -> Path:
     raw_input = raw_input.expanduser().resolve()
     output_file = output_file.expanduser().resolve()
@@ -312,6 +400,8 @@ def export_cleaned_dataset(
         raise FileNotFoundError(f"Input file not found: {raw_input}")
     if method not in {"integer", "poisson", "hybrid"}:
         raise ValueError("method must be one of: integer, poisson, hybrid")
+    if workers < 1 or chunk_size < 1:
+        raise ValueError("workers and chunk_size must be positive")
 
     if output_file.exists() and not overwrite:
         raise FileExistsError(
@@ -324,7 +414,8 @@ def export_cleaned_dataset(
     print(f"Output file: {output_file}")
     print(
         f"Settings: q = {q:.6f} um | tau = {tau:.2f} um | method = {method} | "
-        f"temporal_align = {temporal_align} | hp50hz = {apply_highpass_50hz} | workers = {workers}"
+        f"temporal_align = {temporal_align} | hp50hz = {apply_highpass_50hz} | "
+        f"workers = {workers} | stage_input = {stage_input_to_scratch}"
     )
 
     # 1. Read metadata from raw file
@@ -352,13 +443,48 @@ def export_cleaned_dataset(
     ny, nx = len(y_arr), len(x_arr)
     print(f"Total frames: {total_frames:,} | Grid: {ny}x{nx} | fs: {fs:.1f} Hz", flush=True)
 
-    # Allocate scratch memory map for full recording to minimize RAM footprint
+    # Allocate scratch memory map for the full recording. For I/O-bound source
+    # storage, the read-only input can optionally be staged to the same
+    # node-local scratch filesystem.
     if scratch_dir is None:
         scratch_dir = output_file.parent / ".scratch"
+    scratch_dir = scratch_dir.expanduser().resolve()
     scratch_dir.mkdir(parents=True, exist_ok=True)
     mmap_path = scratch_dir / f"mmap_spatial_{output_file.stem}_{os.getpid()}.dat"
+    staged_input_path: Path | None = None
+    processing_input = raw_input
+
+    required_scratch_bytes = total_frames * ny * nx * np.dtype(np.float32).itemsize
+    if stage_input_to_scratch:
+        required_scratch_bytes += raw_input.stat().st_size
+    free_scratch_bytes = shutil.disk_usage(scratch_dir).free
+    if free_scratch_bytes < required_scratch_bytes:
+        raise OSError(
+            f"Insufficient scratch space in {scratch_dir}: need at least "
+            f"{required_scratch_bytes / 1024**3:.1f} GiB, have "
+            f"{free_scratch_bytes / 1024**3:.1f} GiB."
+        )
 
     try:
+        if stage_input_to_scratch:
+            staged_input_path = scratch_dir / (
+                f"staged_input_{raw_input.stem}_{os.getpid()}{raw_input.suffix}"
+            )
+            if raw_input.stat().st_dev == scratch_dir.stat().st_dev:
+                print(
+                    "Warning: staged input and source are on the same filesystem; "
+                    "staging may not improve throughput.",
+                    flush=True,
+                )
+            print(f"Staging input to scratch: {staged_input_path}", flush=True)
+            stage_started = time.perf_counter()
+            shutil.copyfile(raw_input, staged_input_path)
+            processing_input = staged_input_path
+            print(
+                f"Input staging finished in {time.perf_counter() - stage_started:.1f} s.",
+                flush=True,
+            )
+
         mmap_spatial = np.memmap(
             mmap_path, dtype=np.float32, mode="w+", shape=(total_frames, ny, nx)
         )
@@ -384,7 +510,22 @@ def export_cleaned_dataset(
         completed_chunks = 0
         progress_interval = max(1, n_chunks // 10)
 
-        with ProcessPoolExecutor(max_workers=workers) as executor:
+        print(
+            "  Worker I/O: persistent HDF5 reader + direct disjoint scratch writes",
+            flush=True,
+        )
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_spatial_worker,
+            initargs=(
+                str(processing_input),
+                str(mmap_path),
+                (total_frames, ny, nx),
+                q,
+                tau,
+                method,
+            ),
+        ) as executor:
             future_to_chunk = {}
             chunk_iter = iter(chunk_ranges)
 
@@ -392,12 +533,8 @@ def export_cleaned_dataset(
                 start, end = next(chunk_iter)
                 fut = executor.submit(
                     _process_chunk_worker,
-                    str(raw_input),
                     start,
                     end,
-                    q,
-                    tau,
-                    method,
                 )
                 future_to_chunk[fut] = (start, end)
 
@@ -408,7 +545,6 @@ def export_cleaned_dataset(
                     (
                         start,
                         end,
-                        chunk_data,
                         n_mod,
                         chunk_channels,
                         chunk_qc,
@@ -416,26 +552,22 @@ def export_cleaned_dataset(
                     del future_to_chunk[fut]
                     total_modified += n_mod
 
-                    # Store directly into memory-mapped scratch buffer
-                    mmap_spatial[start:end] = chunk_data
+                    # Surface fields are already in shared scratch; only the
+                    # compact diagnostics traverse the process pipe.
                     spatial_channels[start:end] = chunk_channels
                     spatial_qc[start:end] = chunk_qc
 
                     n_chunk_frames = end - start
                     frames_written += n_chunk_frames
                     completed_chunks += 1
-                    del chunk_data, chunk_channels, chunk_qc
+                    del chunk_channels, chunk_qc
 
                     try:
                         next_start, next_end = next(chunk_iter)
                         next_fut = executor.submit(
                             _process_chunk_worker,
-                            str(raw_input),
                             next_start,
                             next_end,
-                            q,
-                            tau,
-                            method,
                         )
                         future_to_chunk[next_fut] = (next_start, next_end)
                     except StopIteration:
@@ -729,6 +861,11 @@ def export_cleaned_dataset(
                 mmap_path.unlink()
             except OSError:
                 pass
+        if staged_input_path is not None and staged_input_path.exists():
+            try:
+                staged_input_path.unlink()
+            except OSError:
+                pass
 
     return output_file
 
@@ -764,6 +901,14 @@ def main() -> None:
     parser.add_argument("--max-frames", type=int, help="Run pilot test on first N frames only")
     parser.add_argument("--scratch-dir", type=Path, help="Directory for temporary memory maps")
     parser.add_argument(
+        "--stage-input-to-scratch",
+        action="store_true",
+        help=(
+            "Copy the input recording into --scratch-dir before processing. "
+            "Useful when scratch is node-local SSD or /dev/shm."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing output file if present",
@@ -782,6 +927,7 @@ def main() -> None:
         workers=args.workers,
         chunk_size=args.chunk_size,
         scratch_dir=args.scratch_dir,
+        stage_input_to_scratch=args.stage_input_to_scratch,
         max_frames=args.max_frames,
         overwrite=args.overwrite,
     )

@@ -167,6 +167,14 @@ def parse_args() -> argparse.Namespace:
         help="Directory for temporary memory maps.",
     )
     parser.add_argument(
+        "--stage-input-to-scratch",
+        action="store_true",
+        help=(
+            "Copy each input recording into --scratch-dir before cleaning. "
+            "Use this with node-local SSD or /dev/shm, not the source filesystem."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace existing cleaned outputs; otherwise they are skipped.",
@@ -447,6 +455,7 @@ def main() -> None:
                     workers=args.workers,
                     chunk_size=args.chunk_size,
                     scratch_dir=args.scratch_dir,
+                    stage_input_to_scratch=args.stage_input_to_scratch,
                     max_frames=args.max_frames,
                     overwrite=args.overwrite,
                 )
