@@ -56,7 +56,10 @@ from data_analysis.temporal_alignment import DEFAULT_Q, DEFAULT_TAU
 DEFAULT_INPUT_ROOT = Path("/disk/hyk049/DHM_new_experiment")
 DEFAULT_OUTPUT_ROOT = Path("/disk/hyk049/jschupp/cleaned_experiment")
 CONDITION_PATTERN = re.compile(r"0p\d{1,2}")
-REALIZATION_PATTERN = re.compile(r"Ca_ac.*")
+# Most conditions use ``Ca_ac_..._repN`` directories, while 0p07 uses the
+# shorter ``repN`` convention. Both contain one direct raw HDF5 recording.
+REALIZATION_PATTERN = re.compile(r"(?:Ca_ac.*|rep\d+)")
+REPETITION_NUMBER_PATTERN = re.compile(r"(?:^|_)rep(\d+)(?:$|_)")
 HDF5_SUFFIXES = {".h5", ".hdf5"}
 
 
@@ -220,9 +223,14 @@ def discover_jobs(
             if path.is_dir() and REALIZATION_PATTERN.fullmatch(path.name)
         )
         if reps:
-            rep_patterns = tuple(f"_rep{r}" for r in reps)
+            selected_reps = set(reps)
             realization_directories = [
-                p for p in realization_directories if any(p.name.endswith(pat) or pat in p.name for pat in rep_patterns)
+                path
+                for path in realization_directories
+                if (
+                    (match := REPETITION_NUMBER_PATTERN.search(path.name))
+                    and int(match.group(1)) in selected_reps
+                )
             ]
 
         for realization_directory in realization_directories:

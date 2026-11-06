@@ -7,7 +7,11 @@ import h5py
 import numpy as np
 
 from data_analysis.audit_cleaning_changes import audit_recording
-from data_analysis.run_clean_dataset_batch import CleanJob, select_jobs_from_audit
+from data_analysis.run_clean_dataset_batch import (
+    CleanJob,
+    discover_jobs,
+    select_jobs_from_audit,
+)
 from data_analysis.temporal_alignment import DEFAULT_Q, DEFAULT_TAU
 
 
@@ -111,3 +115,37 @@ def test_batch_manifest_selects_only_changed_recordings(tmp_path: Path) -> None:
 
     assert [job.input_path for job in selected] == [changed]
     assert [job.input_path for job in reuse_raw] == [unchanged]
+
+
+def test_discovery_accepts_long_and_short_repetition_directory_names(
+    tmp_path: Path,
+) -> None:
+    input_root = tmp_path / "input"
+    output_root = tmp_path / "output"
+    short_directory = input_root / "0p07" / "rep1"
+    long_directory = input_root / "0p08" / "Ca_ac_0p000664_rep2"
+    short_directory.mkdir(parents=True)
+    long_directory.mkdir(parents=True)
+    short_file = short_directory / "short.hdf5"
+    long_file = long_directory / "long.h5"
+    short_file.touch()
+    long_file.touch()
+
+    jobs, issues = discover_jobs(input_root, output_root, method="hybrid")
+
+    assert issues == []
+    assert [(job.condition, job.realization) for job in jobs] == [
+        ("0p07", "rep1"),
+        ("0p08", "Ca_ac_0p000664_rep2"),
+    ]
+    assert jobs[0].input_path == short_file
+    assert jobs[0].output_path == output_root / "0p07" / "rep1" / "short_cleaned_hybrid_hp50hz.hdf5"
+
+    rep1_jobs, rep1_issues = discover_jobs(
+        input_root,
+        output_root,
+        reps=[1],
+        method="hybrid",
+    )
+    assert rep1_issues == []
+    assert [job.realization for job in rep1_jobs] == ["rep1"]
