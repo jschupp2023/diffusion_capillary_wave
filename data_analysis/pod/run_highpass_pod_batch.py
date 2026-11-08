@@ -63,8 +63,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reps", type=int, nargs="+")
     parser.add_argument(
         "--file-pattern",
-        default="*_data_roi-none_cal-true.hdf5",
-        help="Raw input filename glob/substring.",
+        default="*data_roi-none_cal-true*.hdf5",
+        help=(
+            "Raw input filename glob/substring. The default accepts both "
+            "...cal-true.hdf5 and ...cal-true_100k.hdf5."
+        ),
     )
     parser.add_argument("--scratch-root", type=Path, default=DEFAULT_SCRATCH_ROOT)
     parser.add_argument("--cutoff-hz", type=float, default=50.0)

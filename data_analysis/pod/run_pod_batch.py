@@ -229,6 +229,14 @@ def discover_jobs(
         if path.is_dir() and CONDITION_PATTERN.fullmatch(path.name)
     )
     if powers:
+        available_conditions = {path.name for path in condition_directories}
+        for missing_condition in sorted(set(powers) - available_conditions):
+            issues.append(
+                DiscoveryIssue(
+                    directory=input_root / missing_condition,
+                    reason="requested condition directory does not exist",
+                )
+            )
         condition_directories = [p for p in condition_directories if p.name in powers]
 
     for condition_directory in condition_directories:
@@ -237,6 +245,14 @@ def discover_jobs(
             for path in condition_directory.iterdir()
             if path.is_dir() and REALIZATION_PATTERN.fullmatch(path.name)
         )
+        if not realization_directories:
+            issues.append(
+                DiscoveryIssue(
+                    directory=condition_directory,
+                    reason="no Ca_ac* or repN realization directories found",
+                )
+            )
+            continue
         if reps:
             rep_patterns = tuple(f"_rep{r}" for r in reps)
             realization_directories = [

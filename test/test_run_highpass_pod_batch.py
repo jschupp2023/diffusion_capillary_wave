@@ -17,7 +17,7 @@ class RunHighpassPodBatchTests(unittest.TestCase):
     def make_recording(self, root: Path) -> Path:
         directory = root / "0p00" / "rep1"
         directory.mkdir(parents=True)
-        path = directory / "test_data_roi-none_cal-true.hdf5"
+        path = directory / "test_data_roi-none_cal-true_100k.hdf5"
         n_frames = 400
         sampling_hz = 1_000.0
         time = np.arange(n_frames, dtype=np.float64) / sampling_hz
