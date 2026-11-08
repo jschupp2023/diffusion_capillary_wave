@@ -38,7 +38,10 @@ from typing import TextIO
 
 DEFAULT_INPUT_ROOT = Path("/disk/hyk049/DHM_new_experiment")
 CONDITION_PATTERN = re.compile(r"0p\d{1,2}")
-REALIZATION_PATTERN = re.compile(r"Ca_ac.*")
+# Most experiment trees use ``Ca_ac_*_repN`` directories.  A few conditions
+# use the shorter ``repN`` convention, so accept both without changing the
+# mirrored output layout.
+REALIZATION_PATTERN = re.compile(r"(?:Ca_ac.*|rep\d+)")
 HDF5_SUFFIXES = {".h5", ".hdf5"}
 
 
@@ -369,6 +372,8 @@ def run_and_tee(
         process.terminate()
         process.wait()
         raise
+    finally:
+        process.stdout.close()
 
 
 def run_batch(args: argparse.Namespace, log: TextIO) -> int:
