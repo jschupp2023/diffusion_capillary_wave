@@ -30,7 +30,10 @@ from data_analysis.psd.pod_center_psd import infer_sampling_frequency
 
 DEFAULT_REDUCED_ROOT = Path("/home/jonas/ucsd_thesis/reduced_data")
 POWER_PATTERN = re.compile(r"0p\d{1,2}")
-REPETITION_PATTERN = re.compile(r"Ca_ac.*_rep(?P<number>\d+)$")
+# Most reduced datasets retain the ``Ca_ac_*_repN`` source-folder name, while
+# the 0p07 campaign uses the shorter ``repN`` convention.  Both identify the
+# same repetition axis and should be discoverable by downstream diagnostics.
+REPETITION_PATTERN = re.compile(r"(?:Ca_ac.*_rep|rep)(?P<number>\d+)$")
 DEFAULT_LAGS = (0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000)
 
 

@@ -72,6 +72,13 @@ def spatial_mean_dataset_path(cutoff_hz):
     return f"preprocessing/frame_spatial_mean_highpass/cutoff_{tag}_hz"
 
 
+def _parse_rep_number(name: str) -> int:
+    m = re.search(r"(?:_rep|^rep)(\d+)$", name)
+    if not m:
+        raise ValueError(f"Could not parse repetition number from '{name}'.")
+    return int(m.group(1))
+
+
 def inspect_sources(basis, directory, experiment, rank, validation_reps,
                     spatial_mean_dataset, spatial_mean_highpass_hz,
                     spatial_mean_representation):
@@ -85,9 +92,9 @@ def inspect_sources(basis, directory, experiment, rank, validation_reps,
         raise ValueError("Shared mode shape does not match its spatial grid.")
     records, units = [], None
     seen = set()
-    for name in sorted(basis["repetitions"], key=lambda s: int(s.rsplit("_rep", 1)[1])):
+    for name in sorted(basis["repetitions"], key=_parse_rep_number):
         group = basis[f"repetitions/{name}"]
-        rep = int(name.rsplit("_rep", 1)[1])
+        rep = _parse_rep_number(name)
         if rep in seen:
             raise ValueError("Duplicate repetition number in shared basis.")
         seen.add(rep)
@@ -290,7 +297,7 @@ class SharedPODTrainingData:
                     and self.spatial_mean_representation != SPATIAL_MEAN_SEPARATE):
                 raise ValueError(
                     "A spatial-mean high-pass cutoff requires the legacy separate-coordinate format.")
-            numbers = sorted(int(name.rsplit("_rep", 1)[1]) for name in basis["repetitions"])
+            numbers = sorted(_parse_rep_number(name) for name in basis["repetitions"])
             count = max(1, round(.15 * len(numbers)))
             if test_reps is None:
                 test_reps = [n for n in numbers if n not in (validation_reps or [])][-count:]

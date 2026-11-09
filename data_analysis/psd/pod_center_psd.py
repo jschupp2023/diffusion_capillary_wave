@@ -263,11 +263,6 @@ def reconstruct_point_signals(
                 handle.attrs.get("instantaneous_spatial_mean_removed", False),
             )
         )
-        if not spatial_mean_was_removed:
-            raise ValueError(
-                "The instantaneous spatial mean was not removed before this POD; "
-                "adding frame_spatial_mean would double-count it."
-            )
         time_values = np.asarray(handle["grid/time"], dtype=np.float64)
         x_dataset = handle["grid/x"]
         y_dataset = handle["grid/y"]
@@ -344,7 +339,15 @@ def reconstruct_point_signals(
 
     if not np.isfinite(preprocessed_signal).all() or not np.isfinite(spatial_mean).all():
         raise ValueError("Reconstructed signal or spatial mean contains nonfinite values.")
-    with_spatial_mean = preprocessed_signal + spatial_mean
+    # Legacy POD files remove the instantaneous spatial mean and therefore
+    # require it to be restored.  New cleaned-data POD files deliberately keep
+    # that motion inside the modal coefficients; adding the saved diagnostic
+    # trajectory in that case would double-count it.
+    with_spatial_mean = (
+        preprocessed_signal + spatial_mean
+        if spatial_mean_was_removed
+        else preprocessed_signal.copy()
+    )
     if show_progress:
         print(
             f"Point reconstruction completed in {time.perf_counter() - started:.2f} s.",

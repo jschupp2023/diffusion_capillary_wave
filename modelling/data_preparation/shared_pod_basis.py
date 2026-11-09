@@ -88,14 +88,15 @@ def discover_repetitions(directory: Path, pod_filename: str) -> list[Path]:
         raise ValueError("--pod-filename must be a filename, not a path.")
     directories = sorted(
         (p for p in directory.iterdir()
-         if p.is_dir() and re.fullmatch(r"Ca_ac.*_rep\d+", p.name)),
-        key=lambda p: (int(p.name.rsplit("_rep", 1)[1]), p.name),
+         if p.is_dir() and re.fullmatch(r"(?:Ca_ac.*_rep|rep)\d+", p.name)),
+        key=lambda p: (int(re.search(r"rep(\d+)$", p.name).group(1)), p.name),
     )
     if not directories:
-        raise ValueError(f"No Ca_ac*_repN directories found in {directory}.")
+        raise ValueError(f"No Ca_ac*_repN or repN directories found in {directory}.")
     # Do not silently pool different acquisition conditions within a power.
-    if len({p.name.rsplit("_rep", 1)[0] for p in directories}) != 1:
-        raise ValueError(f"Multiple Ca_ac conditions found in {directory}.")
+    prefixes = {re.sub(r"rep\d+$", "", p.name) for p in directories}
+    if len(prefixes) != 1:
+        raise ValueError(f"Multiple Ca_ac conditions found in {directory}: {prefixes}.")
     paths = [p / pod_filename for p in directories]
     missing = [str(p) for p in paths if not p.is_file()]
     if missing:
