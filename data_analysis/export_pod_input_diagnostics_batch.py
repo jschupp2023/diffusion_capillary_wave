@@ -30,6 +30,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import time
 import traceback
@@ -39,6 +40,12 @@ for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import h5py
 import numpy as np
+
+# Support both ``python -m data_analysis...`` and direct execution from the
+# repository root as shown in the lab-computer command.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_analysis.energy.pod_capillary_energy import (
     field_energies,
