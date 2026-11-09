@@ -59,7 +59,7 @@ from data_analysis.pod.run_highpass_pod_batch import materialize_highpass_input
 from data_analysis.psd.pod_center_psd import compute_welch, infer_sampling_frequency
 
 
-DEFAULT_REDUCED_ROOT = Path("/disk/hyk049/jschupp/reduced_data/clean_red_data")
+DEFAULT_REDUCED_ROOT = Path("/disk/hyk049/jschupp/clean_red_data")
 DEFAULT_RAW_ROOT = Path("/disk/hyk049/DHM_new_experiment")
 DEFAULT_SCRATCH_ROOT = Path("/dev/shm") / (
     f"{os.environ.get('USER', 'user')}_pod_input_diagnostics"
